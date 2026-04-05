@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets
+.env
+
+# Large binary outputs (models, images)
+lora_output/
+outputs/
+
+# Dataset images (too large for git, keep locally)
+dataset/raw/
+dataset/retrain_raw_only/
+dataset/retrain_mixed/
+dataset/retrain_after03/
+
+# IDE
+.idea/
+.vscode/

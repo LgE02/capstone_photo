@@ -1,0 +1,25 @@
+# 동화 삽화 생성 + LoRA 파인튜닝 - 필수 패키지
+torch>=2.1.0
+torchvision>=0.16.0
+diffusers>=0.25.0
+transformers>=4.35.0
+accelerate>=0.24.0
+safetensors>=0.4.0
+huggingface_hub>=0.19.0
+Pillow>=10.0.0
+numpy>=1.24.0
+tqdm>=4.65.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# LoRA 파인튜닝 필수
+peft>=0.7.0               # LoRA 네트워크 구성
+
+# 자동 캡션 생성 (BLIP)
+# transformers에 포함 (추가 설치 불필요)
+
+# 선택: xformers (VRAM 절약 + 속도 향상)
+# pip install xformers
+
+# 선택: bitsandbytes (8-bit Adam, VRAM 8GB 이하 환경에서 필요)
+# pip install bitsandbytes
