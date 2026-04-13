@@ -71,7 +71,20 @@
       "Bash(ls C:/Users/leega/Desktop/Projects/CapStone/picture/*.py)",
       "Bash(\"C:/Users/leega/Desktop/Projects/CapStone/picture/fairytale_lora/.venv/Scripts/python.exe\" -c \"import torch; print\\(torch.__version__\\)\")",
       "Bash(.venv/Scripts/python.exe test_pipeline.py --story \"깊은 바다 용궁에서 용왕님이 심하게 아팠습니다.:*)",
-      "Bash(.venv/Scripts/python.exe test_pipeline.py --story \"옛날 옛날 한 옛날에, 어느 작은 마을에 용감한 마음을 가진 토끼 한 마리가 살았답니다.:*)"
+      "Bash(.venv/Scripts/python.exe test_pipeline.py --story \"옛날 옛날 한 옛날에, 어느 작은 마을에 용감한 마음을 가진 토끼 한 마리가 살았답니다.:*)",
+      "Bash(grep -E \"\\\\.py$|\\\\.md$\")",
+      "Bash(.venv/Scripts/python.exe test_pipeline.py --story '용감한 흰 토끼가 푸른 숲속에서 혼자 산책하고 있었습니다.:*)",
+      "Bash(.venv/Scripts/python.exe test_pipeline.py --story '소녀 릴리아는 유럽풍 마을 광장에서 꽃을 팔고 있었습니다.:*)",
+      "Bash(python test_pipeline.py --lora raw_200 --seed 42)",
+      "Bash(conda info:*)",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\python.exe\" test_pipeline.py --lora raw_200 --seed 42)",
+      "Bash(grep -o '옛날.*\\\\\\\\\\\\\\\\n.*\\\\\\\\\\\\\\\\n.*\\\\\\\\\\\\\\\\n' \"C:\\\\Users\\\\leega\\\\.claude\\\\projects\\\\C--Users-leega-Desktop-Projects-CapStone-picture-fairytale-lora--claude-worktrees-vigilant-rhodes\\\\661efbb8-409d-4651-b777-652daa9a4848.jsonl\")",
+      "Bash(grep -oP '나무꾼.*?\\\\\\\\\\\\\\\\n.*?\\\\\\\\\\\\\\\\n' \"C:\\\\Users\\\\leega\\\\.claude\\\\projects\\\\C--Users-leega-Desktop-Projects-CapStone-picture-fairytale-lora--claude-worktrees-vigilant-rhodes\\\\661efbb8-409d-4651-b777-652daa9a4848.jsonl\")",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi; print\\('fastapi', fastapi.__version__\\)\")",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sse_starlette; print\\('sse_starlette OK'\\)\")",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\pip.exe\" install:*)",
+      "Bash(\"C:\\\\Users\\\\leega\\\\Desktop\\\\Projects\\\\CapStone\\\\picture\\\\fairytale_lora\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install sse-starlette uvicorn)"
     ]
   }
 }

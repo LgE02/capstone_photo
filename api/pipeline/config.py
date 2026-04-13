@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 BASE_MODELS = {
     "sdxl": {
@@ -12,12 +12,11 @@ BASE_MODELS = {
         "description": "Primary base model for fairytale illustration generation",
         "default_size": (1024, 1024),
         "num_inference_steps": 30,
-        "guidance_scale": 7.5,
+        "guidance_scale": 8.0,
     },
 }
 
 LORA_CONFIGS = {
-    # ── retrain_raw_only (원본 46장, 550 step) ─────────────────────────────
     "raw_100": {
         "repo_id": None,
         "weight_name": str(PROJECT_ROOT / "lora_output" / "retrain_raw_only" / "checkpoint-100"),
@@ -68,18 +67,6 @@ LORA_CONFIGS = {
     },
 }
 
-FAIRYTALE_PROMPTS = {
-    "storybook_test": {
-        "positive": (
-            "cute rounded children's book illustration, soft pastel colors, "
-            "gentle watercolor texture, warm storybook atmosphere"
-        ),
-        "negative": (
-            "realistic photo, 3d render, horror, dark mood, text, watermark"
-        ),
-    },
-}
-
 OUTPUT_CONFIG = {
     "output_dir": str(PROJECT_ROOT / "outputs"),
     "save_format": "PNG",
@@ -91,8 +78,7 @@ OUTPUT_CONFIG = {
 STYLE_PRESETS = {
     "fairytale_pastel": {
         "positive": (
-            "ftbookstyle, child picture book illustration, flat cartoon illustration, "
-            "clean bold line art, chibi proportions, vivid flat pastel colors"
+            "ftbookstyle, flat cartoon illustration, bold line art, pastel colors"
         ),
         "negative": (
             "multiple characters, crowd scene, many figures, repeating pattern, "
@@ -111,48 +97,48 @@ STYLE_PRESETS = {
 THEME_EXPANSIONS = {
     "KOREAN_TRADITIONAL": {
         "aliases": ["korean_traditional", "korean traditional", "joseon", "korean"],
-        "positive": "Korean Joseon era hanok wooden house, curved dark tiled roof, ondol floor, wooden pillars, dancheong painted eaves",
+        "positive": "Korean hanok house, curved tiled roof, dancheong painted eaves",
         "negative": (
             "Chinese architecture, Chinese pagoda, Chinese lantern, red Chinese temple, "
-            "Chinese hanfu, Chinese dragon robe, Chinese palace, Chinese curved roof, "
+            "Chinese hanfu, Chinese dragon robe, Chinese palace, "
             "Japanese kimono, Japanese torii, Japanese castle, "
             "modern city, Western medieval castle, European building"
         ),
     },
     "FOREST_NATURE": {
         "aliases": ["forest_nature", "forest", "nature", "woods", "woodland"],
-        "positive": "simple nature background",
-        "negative": "modern buildings, city street, industrial background",
+        "positive": "lush green forest, tall trees, dappled sunlight, woodland path",
+        "negative": "modern buildings, city street, industrial background, East Asian architecture",
     },
     "MIXED": {
         "aliases": ["mixed", "hybrid", "varied"],
-        "positive": "simple colorful background",
-        "negative": "photorealistic collage, chaotic clutter",
+        "positive": "colorful storybook background, warm lighting",
+        "negative": "photorealistic collage, chaotic clutter, dark mood",
     },
     "FANTASY_WORLD": {
         "aliases": ["fantasy_world", "fantasy", "magic world"],
-        "positive": "magical fantasy background",
-        "negative": "modern office, realistic suburb, military setting",
+        "positive": "magical fantasy landscape, enchanted forest, glowing particles",
+        "negative": "modern office, realistic suburb, military setting, East Asian architecture",
     },
     "EUROPEAN_MEDIEVAL": {
         "aliases": ["european_medieval", "western medieval", "medieval", "european"],
-        "positive": "medieval village background",
-        "negative": "modern city, East Asian historical costume",
+        "positive": "European medieval village, cobblestone street, half-timbered houses, stone castle",
+        "negative": "modern city, East Asian architecture, hanok, hanbok, Korean clothing, Chinese clothing, Japanese clothing",
     },
     "MODERN_FANTASY": {
         "aliases": ["modern_fantasy", "modern fantasy"],
-        "positive": "simple magical background",
-        "negative": "strict historical costume, military gear",
+        "positive": "modern city with magical elements, glowing lights, enchanted garden",
+        "negative": "strict historical costume, military gear, East Asian architecture",
     },
     "UNDERWATER": {
         "aliases": ["underwater", "ocean", "sea", "sea kingdom"],
-        "positive": "underwater coral background",
-        "negative": "dry desert, city street",
+        "positive": "underwater ocean scene, colorful coral reef, bubbles, light rays through water",
+        "negative": "dry desert, city street, land vegetation, sky, clouds",
     },
     "SKY_HEAVEN": {
         "aliases": ["sky_heaven", "sky", "heaven", "cloud kingdom"],
-        "positive": "pastel sky background",
-        "negative": "underground cave, dark industrial background",
+        "positive": "celestial sky kingdom, fluffy clouds, golden sunlight, starry atmosphere",
+        "negative": "underground cave, dark industrial background, ocean, water",
     },
 }
 
@@ -244,5 +230,4 @@ RECOMMENDED_COMBOS = [
     ("sdxl", "raw_400"),
 ]
 
-# 파이프라인 기본 LoRA — 학습 완료 후 compare_checkpoints.py로 최적 step 선별
 DEFAULT_LORA = "raw_300"

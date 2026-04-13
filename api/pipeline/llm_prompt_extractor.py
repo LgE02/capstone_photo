@@ -8,7 +8,7 @@
 를 일괄 반환한다.
 
 사용 흐름:
-    from runtime_pipeline.llm_prompt_extractor import extract_story_prompts
+    from api.pipeline.llm_prompt_extractor import extract_story_prompts
     result = extract_story_prompts("옛날에 토끼가 산에서 살았습니다...")
     # result는 build_story_plan()에 전달 가능한 dict
 """
@@ -62,7 +62,23 @@ For ANIMAL characters:
 - If they wear clothes, specify the clothing ON the animal body
 - NEVER describe an animal character as looking human
 
-CRITICAL - Korean traditional element translation rules (SDXL confuses Korean with Chinese):
+MULTI-CHARACTER SPATIAL COMPOSITION (2-3 characters max):
+- When 2+ characters appear together, ALWAYS specify their positions:
+  "character A on left side, character B on right side"
+  "character A in foreground, character B in background"
+- This prevents the image generator from merging characters into one
+
+ANIMAL CHARACTER ENFORCEMENT:
+- For animal characters, scene_prompt MUST include "animal body, NOT human"
+- Example: "white rabbit with animal body on left side, NOT human"
+- NEVER describe an animal walking upright like a human unless the story explicitly says so
+
+HUMAN CHARACTER CONSISTENCY:
+- For human characters, always repeat their key visual features (hair color, clothing color) in every scene_prompt
+- Example: if a character has "long black hair, blue hanbok", include those details in every scene they appear
+
+Korean traditional element translation rules (ONLY apply when theme is KOREAN_TRADITIONAL):
+- These rules help SDXL distinguish Korean from Chinese elements
 - 초가집 → "Korean straw-thatched roof farmhouse with wooden walls" (NOT "thatched cottage")
 - 기와집 → "Korean hanok house with dark curved tiled roof and wooden pillars"
 - 한옥 → "Korean hanok house with dancheong painted eaves and ondol floor"
@@ -75,6 +91,7 @@ CRITICAL - Korean traditional element translation rules (SDXL confuses Korean wi
 - ALWAYS use "hanbok" for clothing, NEVER "robe" or "dress" or "gown"
 - NEVER use generic Asian terms - always prefix with "Korean" or "Joseon"
 - Include "dancheong painted" for palace/temple details (unique Korean feature)
+- Do NOT apply these Korean-specific rules for non-Korean themes (EUROPEAN_MEDIEVAL, FANTASY_WORLD, etc.)
 
 JSON schema:
 {
@@ -115,7 +132,7 @@ Extract illustration prompts from this Korean fairytale:
 
 def extract_story_prompts(
     story_text: str | list[str],
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-4o",
     max_scenes: int = 10,
 ) -> dict[str, Any]:
     """동화 텍스트를 GPT-4o-mini로 분석해 구조화된 결과를 반환한다.
@@ -135,8 +152,6 @@ def extract_story_prompts(
             "scene_prompts": [str, ...],  # 장면별 영어 프롬프트
         }
     """
-    # DB에서 줄 목록으로 들어올 경우 하나의 텍스트로 합친다
-    # (1회 API 호출로 전체 맥락을 파악해야 캐릭터 일관성 유지 가능)
     if isinstance(story_text, list):
         story_text = "\n".join(line.strip() for line in story_text if line.strip())
     from openai import OpenAI
@@ -159,10 +174,8 @@ def extract_story_prompts(
     raw = response.choices[0].message.content
     parsed = json.loads(raw)
 
-    # 장면 수 제한
     scenes = parsed.get("scenes", [])[:max_scenes]
 
-    # build_story_plan()이 기대하는 형식으로 변환
     characters = []
     for ch in parsed.get("characters", []):
         characters.append({
@@ -178,7 +191,6 @@ def extract_story_prompts(
 
     lines = [s["line"] for s in scenes]
     scene_prompts = [s.get("scene_prompt", "") for s in scenes]
-    # 장면별 등장 캐릭터 ID 목록 (LLM이 명시적으로 반환)
     scene_focus_characters = []
     for s in scenes:
         fc = s.get("focus_characters") or s.get("focus_character")
