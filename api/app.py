@@ -26,11 +26,10 @@ async def lifespan(app: FastAPI):
     """서버 시작 시 모델 로드, 종료 시 언로드."""
     from api.pipeline.model_manager import ModelManager
 
-    # ── 시작: 모델 로드 ──────────────────────────────────────────────
-    print("[API] SDXL + LoRA + IP-Adapter 로드 중...")
+    # ── 시작: FLUX 모델 로드 ─────────────────────────────────────────
+    print("[API] FLUX Schnell (NF4) 로드 중...")
     mgr = ModelManager.get()
-    mgr.load(base_model_key="sdxl", lora_key="raw_200")
-    mgr.generator.load_ip_adapter(scale=0.2)
+    mgr.load()
     print("[API] 모델 로드 완료")
 
     # ── Job 시스템 초기화 ────────────────────────────────────────────
@@ -52,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="동화 삽화 생성 API",
-    description="동화 텍스트를 받아 SDXL+LoRA 기반 삽화를 생성합니다.",
+    description="동화 텍스트를 받아 FLUX.1 Schnell 기반 삽화를 생성합니다.",
     lifespan=lifespan,
 )
 

@@ -1,4 +1,4 @@
-"""FastAPI 엔드포인트."""
+"""FastAPI 엔드포인트 — Klein API 전용."""
 
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ import json
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from api.schemas import GenerateRequest
-from api.tasks import JobExecutor, JobStore
+from api_klein.schemas import GenerateRequest
+from api_klein.tasks import KleinJobExecutor, JobStore
 
 router = APIRouter()
 
-# app.py의 lifespan에서 주입
 _store: JobStore | None = None
-_executor: JobExecutor | None = None
+_executor: KleinJobExecutor | None = None
 
 
-def init_routes(store: JobStore, executor: JobExecutor) -> None:
+def init_routes(store: JobStore, executor: KleinJobExecutor) -> None:
     global _store, _executor
     _store = store
     _executor = executor
@@ -26,9 +25,8 @@ def init_routes(store: JobStore, executor: JobExecutor) -> None:
 
 @router.post("/generate")
 async def generate(request: GenerateRequest):
-    """동화 삽화 생성 (SSE 스트리밍 응답).
-
-    페이지가 완성될 때마다 실시간으로 이벤트를 전송한다.
+    """동화 삽화 생성 (SSE 스트리밍).
+    캐릭터 레퍼런스 생성 후 페이지별 삽화를 실시간으로 스트리밍.
     """
     if _store is None or _executor is None:
         raise HTTPException(500, "서버 초기화 안 됨")
@@ -40,21 +38,17 @@ async def generate(request: GenerateRequest):
         seed=request.seed,
     )
 
-    # SSE 이벤트를 asyncio.Queue로 전달
     event_queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
     def on_event(event_type: str, data: dict) -> None:
-        """워커 스레드에서 호출 → asyncio 큐에 이벤트 전달."""
         loop.call_soon_threadsafe(event_queue.put_nowait, (event_type, data))
 
-    # job 제출
     submitted = _executor.submit(job.job_id, on_event=on_event)
     if not submitted:
         raise HTTPException(503, "서버가 처리 중입니다. 잠시 후 다시 시도해주세요.")
 
     async def event_generator():
-        """SSE 이벤트 스트림 생성."""
         try:
             while True:
                 event_type, data = await event_queue.get()
@@ -62,8 +56,6 @@ async def generate(request: GenerateRequest):
                     "event": event_type,
                     "data": json.dumps(data, ensure_ascii=False),
                 }
-                # complete: 정상 종료, error: job-level 실패 종료
-                # page_error: 개별 페이지 실패 → 스트림 유지
                 if event_type in ("complete", "error"):
                     break
         except asyncio.CancelledError:
@@ -74,7 +66,7 @@ async def generate(request: GenerateRequest):
 
 @router.get("/jobs/{job_id}")
 async def get_job_status(job_id: str):
-    """Job 상태 조회 (디버깅/백업용)."""
+    """Job 상태 조회."""
     if _store is None:
         raise HTTPException(500, "서버 초기화 안 됨")
 
@@ -87,6 +79,7 @@ async def get_job_status(job_id: str):
         "status": job.status,
         "total_pages": job.total_pages,
         "completed_pages": job.completed_pages,
+        "character_reference_url": job.character_reference_url,
         "pages": [
             {
                 "page_index": p.page_index,

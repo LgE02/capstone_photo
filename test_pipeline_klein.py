@@ -1,13 +1,11 @@
 """
-동화 삽화 파이프라인 테스트 스크립트 (FLUX Schnell)
+FLUX.2-klein-4B 동화 삽화 파이프라인 테스트
 
-실행 방법:
-    cd fairytale_lora
-    python test_pipeline.py
-    python test_pipeline.py --story-a   # Story A: 동물 주인공
-    python test_pipeline.py --story-b   # Story B: 사람 주인공
-    python test_pipeline.py --seed 42
-    python test_pipeline.py --keep-loaded
+실행:
+    python test_pipeline_klein.py            # Story A (기본)
+    python test_pipeline_klein.py --story-a  # Story A: 동물 주인공 (토끼+나무꾼+선녀)
+    python test_pipeline_klein.py --story-b  # Story B: 사람 주인공 (릴리아, 유럽 중세)
+    python test_pipeline_klein.py --seed 42
 """
 
 import argparse
@@ -16,15 +14,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image
+# ── 테스트 동화 텍스트 (기존 test_pipeline.py와 동일) ───────────────────────
 
-# ── 테스트 동화 텍스트 ────────────────────────────────────────────────────────
-DEFAULT_STORY = """옛날에 개구리 대군님이 한옥 마을에서 살았습니다.
-어느 날 대군님은 장터에서 편지를 받았습니다.
-비가 내리는 궁궐 앞에서 기뻐하며 춤을 추었습니다.
-임금님께서 등불을 들고 기다리고 있었습니다."""
-
-# ── Story A: 동물 주인공 (토끼 + 나무꾼 + 선녀) ────────────────────────────
 STORY_A = """옛날 옛날 한 옛날에, 어느 작은 마을에 용감한 마음을 가진 토끼 한 마리가 살았답니다.
 토끼는 용감한 마음을 가졌지만, 평소에는 숲을 뛰어다니며 친구들과 놀기만 했답니다.
 하루는 토끼가 숲속에서 친구들과 신나게 놀고 있을 때, 나무꾼이 나타나서 "이게 웬일이에요! 오늘은 특별한 일이 일어날 것 같아요!"라고 외쳤답니다.
@@ -36,7 +27,6 @@ STORY_A = """옛날 옛날 한 옛날에, 어느 작은 마을에 용감한 마�
 선녀는 토끼에게 "너는 용감한 마음을 가지고 있구나, 그래서 나는 너에게 특별한 일을 부탁하고 싶어!"라고 말했답니다.
 토끼는 선녀의 부탁을 듣고 "어떤 특별한 일을 부탁하실 건가요?"라고 궁금해했지요."""
 
-# ── Story B: 사람 주인공 (릴리아, 유럽 중세) ────────────────────────────────
 STORY_B = """옛날 옛적 유럽의 한 작은 마을에 사는 용감한 소녀 릴리아가 있었답니다.
 릴리아는 매일 아침 해가 뜨기 전에 일어나 마을 근처의 숲속에서 신비로운 생물들과 놀며 즐거운 시간을 보냈답니다.
 릴리아는 숲속에서 만나던 친구들인 작은 요정들과 함께 날마다 새로운 모험을 꿈꾸었답니다.
@@ -58,7 +48,6 @@ def print_divider(title: str = "", width: int = 70) -> None:
 
 
 def print_plan_debug(plan) -> None:
-    """스토리 분석 결과와 생성될 프롬프트를 상세하게 출력한다."""
     print_divider("스토리 분석 결과")
     print(f"  테마:      {plan.world.theme}  →  {plan.world.expansion_key}")
     print(f"  배경 힌트: {plan.world.positive_hint}")
@@ -69,43 +58,29 @@ def print_plan_debug(plan) -> None:
         print(f"  [{cid}]  {desc}")
     print()
 
-    for ch in plan.story_input.characters:
-        parts = []
-        if ch.species:
-            parts.append(f"species={ch.species}")
-        if ch.job:
-            parts.append(f"job={ch.job}")
-        if ch.type:
-            parts.append(f"type={ch.type}")
-        if ch.visual_hint:
-            parts.append(f"visual_hint={ch.visual_hint}")
-        print(f"  캐릭터 [{ch.id}]: {', '.join(parts)}")
-    print()
-
-    print_divider("장면별 프롬프트")
+    print_divider("장면별 프롬프트 (Klein)")
     for scene in plan.scenes:
         words = scene.prompt.split()
-        print(f"\n  ▶ P{scene.page_index}  ({len(words)}단어 / 약 {int(len(words)*1.4)}토큰)")
+        print(f"\n  ▶ P{scene.page_index}  ({len(words)}단어)")
         print(f"  원문: {scene.source_text}")
-        print(f"  장면: {scene.scene_spec.narrative_hint or '(없음)'}")
         print(f"  ─ PROMPT ─")
         print(f"    {scene.prompt}")
     print()
 
 
-def generate_all_pages_sync(
+def generate_all_pages(
     generator,
     scene_plans,
     output_dir: str,
     seed: Optional[int] = None,
-    width: Optional[int] = None,
-    height: Optional[int] = None,
+    width: int = 1024,
+    height: int = 1024,
+    use_reference: bool = True,
 ) -> list[dict]:
-    """모든 페이지를 동기적으로 생성하고 결과 목록을 반환한다."""
     os.makedirs(output_dir, exist_ok=True)
     results = []
 
-    for i, scene in enumerate(scene_plans):
+    for scene in scene_plans:
         try:
             page_seed = (seed + scene.page_index) if seed is not None else None
 
@@ -114,6 +89,7 @@ def generate_all_pages_sync(
                 seed=page_seed,
                 width=width,
                 height=height,
+                use_reference=use_reference,
             )
 
             saved = generator.save_images(
@@ -127,7 +103,8 @@ def generate_all_pages_sync(
                 "elapsed": elapsed,
                 "source_text": scene.source_text,
             })
-            print(f"  Page {scene.page_index} 완료 ({elapsed:.1f}s): {scene.source_text[:30]}")
+            print(f"  Page {scene.page_index} 완료 ({elapsed:.1f}s): {scene.source_text[:40]}")
+
         except Exception as exc:
             print(f"  Page {scene.page_index} 실패: {exc}")
             results.append({
@@ -144,44 +121,58 @@ def generate_all_pages_sync(
 def run_test(
     story_text: str,
     seed: int | None = 42,
-    low_memory: bool = True,
-    output_dir: str = "outputs/test_flux",
+    output_dir: str = "outputs/test_klein",
     keep_loaded: bool = False,
+    use_reference: bool = True,
 ):
-    from api.pipeline.model_manager import ModelManager
-    from api.pipeline.story_pipeline import build_story_plan
+    from api_klein.pipeline.model_manager import KleinModelManager
+    from api_klein.pipeline.story_pipeline import build_story_plan
 
-    print_divider("동화 삽화 파이프라인 테스트 (FLUX Schnell)")
-    print(f"  seed: {seed}  |  keep_loaded: {keep_loaded}")
+    print_divider("동화 삽화 파이프라인 테스트 (FLUX.2-klein-4B)")
+    print(f"  seed: {seed}")
     print_divider()
 
-    # ── 1. 스토리 분석 & 프롬프트 생성 ───────────────────────────────────────
+    # ── 1. 스토리 분석 ────────────────────────────────────────────────────────
     print("\n[1] 스토리 분석 중...")
     plan = build_story_plan(story_text)
     print_plan_debug(plan)
 
-    # ── 2. 모델 로드 ─────────────────────────────────────────────────────────
-    print(f"[2] FLUX 모델 로드 (ModelManager)...")
-    mgr = ModelManager.get()
-    mgr.load(low_memory_mode=low_memory)
+    # ── 2. 모델 로드 ──────────────────────────────────────────────────────────
+    print("[2] FLUX.2-klein-4B 모델 로드 중...")
+    mgr = KleinModelManager.get()
+    mgr.load()
     generator = mgr.generator
 
-    # ── 3. 전 페이지 삽화 생성 ───────────────────────────────────────────────
-    print(f"\n[3] 삽화 생성 시작 ({len(plan.scenes)}페이지)...")
+    # ── 3. 캐릭터 레퍼런스 생성 ───────────────────────────────────────────────
+    print("\n[3] 캐릭터 레퍼런스 생성 중...")
+    main_char_id = plan.story_input.characters[0].id if plan.story_input.characters else None
+    char_prompt = plan.character_bible.get(main_char_id, "") if main_char_id else ""
+
+    if char_prompt:
+        ref_image = generator.generate_character_reference(char_prompt, seed=seed or 42)
+        ref_dir = os.path.join(output_dir, "reference")
+        generator.save_character_reference(output_dir=ref_dir)
+        print(f"  캐릭터 레퍼런스 저장: {ref_dir}")
+    else:
+        print("  캐릭터 정보 없음 — 레퍼런스 없이 생성")
+
+    # ── 4. 전 페이지 삽화 생성 ───────────────────────────────────────────────
+    print(f"\n[4] 삽화 생성 시작 ({len(plan.scenes)}페이지)...")
     start = time.time()
 
-    results = generate_all_pages_sync(
+    results = generate_all_pages(
         generator=generator,
         scene_plans=plan.scenes,
         output_dir=output_dir,
         seed=seed,
         width=1024,
         height=1024,
+        use_reference=use_reference,
     )
 
     total_elapsed = time.time() - start
 
-    # ── 4. 결과 출력 ─────────────────────────────────────────────────────────
+    # ── 5. 결과 출력 ──────────────────────────────────────────────────────────
     print_divider("생성 결과")
     print(f"  총 소요 시간: {total_elapsed:.1f}초")
     print(f"  저장 위치: {Path(output_dir).resolve()}")
@@ -195,45 +186,42 @@ def run_test(
         if r.get("error"):
             print(f"       오류: {r['error']}")
 
-    # ── 5. 모델 언로드 ───────────────────────────────────────────────────────
+    # ── 6. 모델 언로드 ────────────────────────────────────────────────────────
     if not keep_loaded:
         mgr.unload()
-        print("\n[모델 언로드 완료 - 다시 쓰려면 --keep-loaded 옵션 사용]")
-    else:
-        print("\n[모델 유지 중 - 다음 run_test() 호출 시 즉시 재사용]")
+        print("\n[모델 언로드 완료]")
 
     return results
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="동화 삽화 파이프라인 테스트 (FLUX Schnell)")
-    parser.add_argument("--story", type=str, default=None, help="동화 텍스트 (기본: 개구리 왕자)")
+    parser = argparse.ArgumentParser(description="동화 삽화 파이프라인 테스트 (FLUX.2-klein-4B)")
     story_group = parser.add_mutually_exclusive_group()
     story_group.add_argument("--story-a", action="store_true", help="Story A: 동물 주인공 (토끼+나무꾼+선녀)")
     story_group.add_argument("--story-b", action="store_true", help="Story B: 사람 주인공 (릴리아, 유럽 중세)")
-    parser.add_argument("--seed", type=int, default=42, help="시드값")
-    parser.add_argument("--output", type=str, default="outputs/test_flux", help="출력 디렉토리")
-    parser.add_argument(
-        "--keep-loaded",
-        action="store_true",
-        help="실행 후 모델을 언로드하지 않음 (연속 테스트 시 유용)",
-    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output", type=str, default=None, help="출력 폴더 (미지정 시 자동)")
+    parser.add_argument("--no-ref", action="store_true", help="캐릭터 레퍼런스 이미지 미사용")
+    parser.add_argument("--keep-loaded", action="store_true")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.story_a:
-        story = STORY_A
-    elif args.story_b:
-        story = STORY_B
-    elif args.story:
-        story = args.story
+    story_name = "story_b" if args.story_b else "story_a"
+    ref_tag = "no_ref" if args.no_ref else "with_ref"
+
+    # 출력 폴더 자동 생성: outputs/test_klein/{story_name}_{ref_tag}/
+    if args.output:
+        output_dir = args.output
     else:
-        story = DEFAULT_STORY
+        output_dir = f"outputs/test_klein/{story_name}_{ref_tag}"
+
+    story = STORY_B if args.story_b else STORY_A
     run_test(
         story_text=story,
         seed=args.seed,
-        output_dir=args.output,
+        output_dir=output_dir,
         keep_loaded=args.keep_loaded,
+        use_reference=not args.no_ref,
     )

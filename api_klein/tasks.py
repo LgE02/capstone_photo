@@ -1,4 +1,6 @@
-"""백그라운드 Job 실행 + 이미지 저장 관리."""
+"""Klein 백그라운드 Job 실행기.
+FLUX.2-klein-4B + 캐릭터 레퍼런스 기반 동화 삽화 생성.
+"""
 
 from __future__ import annotations
 
@@ -37,13 +39,12 @@ class Job:
     total_pages: int = 0
     completed_pages: list[int] = field(default_factory=list)
     page_results: list[PageResult] = field(default_factory=list)
+    character_reference_url: str | None = None
     error: str | None = None
     total_elapsed: float = 0.0
 
 
 class JobStore:
-    """인메모리 Job 저장소. 최근 N개만 유지."""
-
     def __init__(self, max_jobs: int = 20):
         self._jobs: OrderedDict[str, Job] = OrderedDict()
         self._max = max_jobs
@@ -61,25 +62,21 @@ class JobStore:
         return self._jobs.get(job_id)
 
 
-# ─── 이미지 저장소 (추상화) ──────────────────────────────────────────────────
+# ─── 이미지 저장소 ───────────────────────────────────────────────────────────
 
 
 class ImageStorage(ABC):
-    """이미지 저장소 인터페이스. LocalStorage / S3Storage 교체 가능."""
-
     @abstractmethod
     def save(self, job_id: str, page_index: int, image: Image.Image) -> str:
-        """이미지를 저장하고 접근 URL을 반환한다."""
+        pass
 
     @abstractmethod
     def get_url(self, job_id: str, page_index: int) -> str:
-        """저장된 이미지의 URL을 반환한다."""
+        pass
 
 
 class LocalStorage(ImageStorage):
-    """로컬 디스크 저장소. FastAPI StaticFiles로 서빙."""
-
-    def __init__(self, base_dir: str = "outputs/jobs", url_prefix: str = "/images"):
+    def __init__(self, base_dir: str = "outputs/klein_jobs", url_prefix: str = "/images"):
         self.base_dir = Path(base_dir)
         self.url_prefix = url_prefix
 
@@ -99,8 +96,8 @@ class LocalStorage(ImageStorage):
 # ─── Job 실행기 ──────────────────────────────────────────────────────────────
 
 
-class JobExecutor:
-    """GPU 독점 단일 워커. 한 번에 하나의 job만 실행한다."""
+class KleinJobExecutor:
+    """GPU 독점 단일 워커. Klein 모델 전용."""
 
     def __init__(
         self,
@@ -116,8 +113,6 @@ class JobExecutor:
         self._callbacks: dict[str, Callable] = {}
         self._callbacks_lock = threading.Lock()
 
-    # ── 공개 API ─────────────────────────────────────────────────────
-
     def start(self) -> None:
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
@@ -126,7 +121,6 @@ class JobExecutor:
         self._shutdown_event.set()
 
     def submit(self, job_id: str, on_event: Callable | None = None) -> bool:
-        """job을 큐에 추가한다. 큐가 가득 차면 False를 반환한다."""
         try:
             self._queue.put_nowait(job_id)
             if on_event:
@@ -136,10 +130,7 @@ class JobExecutor:
         except queue.Full:
             return False
 
-    # ── 내부: 워커 스레드 ────────────────────────────────────────────
-
     def _emit(self, job_id: str, event: str, data: dict) -> None:
-        """SSE 이벤트를 콜백으로 전달한다."""
         with self._callbacks_lock:
             cb = self._callbacks.get(job_id)
         if cb:
@@ -167,21 +158,17 @@ class JobExecutor:
                 with self._callbacks_lock:
                     self._callbacks.pop(job_id, None)
 
-    # ── 내부: 파이프라인 실행 ────────────────────────────────────────
-
     def _run_job(self, job: Job) -> None:
-        from api.pipeline.model_manager import ModelManager
-        from api.pipeline.story_pipeline import build_story_plan
+        from api_klein.pipeline.story_pipeline import build_story_plan, build_scene_plans, build_world_profile
+        from api_klein.pipeline.model_manager import KleinModelManager
 
         start_total = time.time()
 
         # ── 1. 스토리 분석 ───────────────────────────────────────────────
         job.status = "analyzing"
-
         story_plan = build_story_plan(job.story_text)
 
         if job.theme != story_plan.world.theme:
-            from api.pipeline.story_pipeline import build_world_profile, build_scene_plans
             story_plan.world = build_world_profile(job.theme)
             story_plan.scenes = build_scene_plans(
                 story_plan.story_input, story_plan.world, story_plan.character_bible,
@@ -190,13 +177,24 @@ class JobExecutor:
         job.total_pages = len(story_plan.scenes)
         self._emit(job.job_id, "analyzing", {"total_pages": job.total_pages})
 
-        # ── 2. 페이지별 이미지 생성 ─────────────────────────────────────
-        job.status = "generating"
-        generator = ModelManager.get().generator
+        # ── 2. 캐릭터 레퍼런스 생성 ─────────────────────────────────────
+        generator = KleinModelManager.get().generator
 
+        main_char_id = story_plan.story_input.characters[0].id if story_plan.story_input.characters else None
+        char_prompt = story_plan.character_bible.get(main_char_id, "") if main_char_id else ""
+
+        if char_prompt:
+            ref_seed = job.seed if job.seed is not None else 42
+            ref_image = generator.generate_character_reference(char_prompt, seed=ref_seed)
+            ref_url = self._storage.save(job.job_id, 0, ref_image)
+            job.character_reference_url = ref_url
+            self._emit(job.job_id, "character_reference", {"image_url": ref_url})
+
+        # ── 3. 페이지별 삽화 생성 ────────────────────────────────────────
+        job.status = "generating"
         failed_pages: list[int] = []
 
-        for i, scene in enumerate(story_plan.scenes):
+        for scene in story_plan.scenes:
             try:
                 page_seed = (job.seed + scene.page_index) if job.seed is not None else None
 
@@ -205,11 +203,10 @@ class JobExecutor:
                     seed=page_seed,
                     width=1024,
                     height=1024,
+                    use_reference=True,
                 )
 
-                image_url = self._storage.save(
-                    job.job_id, scene.page_index, images[0]
-                )
+                image_url = self._storage.save(job.job_id, scene.page_index, images[0])
 
                 result = PageResult(
                     page_index=scene.page_index,

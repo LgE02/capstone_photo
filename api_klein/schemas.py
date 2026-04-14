@@ -1,4 +1,4 @@
-"""Pydantic 요청/응답 모델."""
+"""Pydantic 요청/응답 모델 — Klein API 전용."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class ThemeType(str, Enum):
 
 
 class GenerateRequest(BaseModel):
-    story_text: str = Field(..., description="\\n으로 구분된 동화 전문")
+    story_text: str = Field(..., description="\n으로 구분된 동화 전문")
     protagonist_type: ProtagonistType = ProtagonistType.other
     theme: ThemeType = ThemeType.FOREST_NATURE
     seed: int | None = 42

@@ -1,27 +1,28 @@
-"""동화 삽화 생성 파이프라인 공통 설정."""
+"""Klein 파이프라인 공통 설정 (api/ 독립 복사본)."""
 
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 BASE_MODELS = {
-    "flux_schnell": {
-        "model_id": "black-forest-labs/FLUX.1-schnell",
-        "type": "flux",
-        "description": "FLUX.1 Schnell — fast 4-step text-to-image model",
+    "flux_klein_4b": {
+        "model_id": "black-forest-labs/FLUX.2-klein-4B",
+        "transformer_id": "Photoroom/FLUX.2-klein-4b-fp8-diffusers",
+        "transformer_subfolder": "transformer_bf16",
+        "type": "flux_klein",
+        "description": "FLUX.2-klein-4B — 4-step reference-image model (Qwen3 40k tokens)",
         "default_size": (1024, 1024),
         "num_inference_steps": 4,
-        "guidance_scale": 0.0,
+        "guidance_scale": 1.0,
     },
 }
 
 OUTPUT_CONFIG = {
-    "output_dir": str(PROJECT_ROOT / "outputs"),
+    "output_dir": str(PROJECT_ROOT / "outputs" / "klein_jobs"),
     "save_format": "PNG",
     "save_comparison": False,
     "num_images_per_prompt": 1,
-    "output_size": (387, 409),
+    "output_size": (1024, 1024),
 }
 
 THEME_EXPANSIONS = {
@@ -53,7 +54,7 @@ THEME_EXPANSIONS = {
     "EUROPEAN_MEDIEVAL": {
         "aliases": ["european_medieval", "western medieval", "medieval", "european"],
         "positive": "European medieval village, cobblestone street, half-timbered houses, stone castle",
-        "negative": "modern city, East Asian architecture, hanok, hanbok, Korean clothing, Chinese clothing, Japanese clothing",
+        "negative": "modern city, East Asian architecture, hanok, hanbok, Korean clothing",
     },
     "MODERN_FANTASY": {
         "aliases": ["modern_fantasy", "modern fantasy"],

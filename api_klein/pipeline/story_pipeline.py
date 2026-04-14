@@ -1,4 +1,8 @@
-"""동화 스토리를 FLUX T5 자연어 프롬프트로 변환하는 파이프라인."""
+"""Klein 전용 스토리 파이프라인 (api/ 독립 복사본).
+
+api/pipeline/story_pipeline.py를 기반으로 완전히 독립적으로 복사.
+Klein(FLUX.2-klein-4B, Qwen3 40k토큰) 전용 프롬프트 빌더 포함.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,9 @@ import json
 import re
 from typing import Any
 
-from api.pipeline.llm_prompt_extractor import extract_story_prompts as _llm_extract
-from api.pipeline.story_analyzer import analyze_story as _analyze_story
-from api.pipeline.config import (
+from api_klein.pipeline.llm_prompt_extractor import extract_story_prompts as _llm_extract
+from api_klein.pipeline.story_analyzer import analyze_story as _analyze_story
+from api_klein.pipeline.config import (
     CHARACTER_TYPE_HINTS,
     JOB_HINTS,
     SPECIES_FALLBACK_TEMPLATE,
@@ -18,6 +22,21 @@ from api.pipeline.config import (
     THEME_EXPANSIONS,
 )
 
+# ── Klein 스타일 프리픽스 ──────────────────────────────────────────────────────
+
+STYLE_PREFIX = (
+    "Children's picture book illustration, "
+    "semi-painterly digital art with soft cel shading and warm color gradients, "
+    "ALL characters drawn in chibi-style proportions: "
+    "large round head, big glossy expressive eyes with highlight sparkles, rosy cheeks, "
+    "small rounded nose, simplified cute features, short compact body, "
+    "warm and approachable storybook aesthetic, "
+    "NOT anime, NOT realistic, NOT photorealistic. "
+    "Richly detailed backgrounds with atmospheric depth and warm ambient lighting. "
+)
+
+
+# ── 데이터 모델 ───────────────────────────────────────────────────────────────
 
 @dataclass
 class QualityGateReport:
@@ -87,7 +106,7 @@ class StoryPlan:
 
 
 def build_story_plan(story_data: str | dict[str, Any], max_scenes: int = 10) -> StoryPlan:
-    """구조화된 스토리 입력을 장면별 FLUX 프롬프트 계획으로 변환한다."""
+    """Klein 전용 스토리 플랜 빌더."""
     story_input = normalize_story_input(story_data, max_scenes=max_scenes)
     cleaned_lines, report = run_quality_gate(story_input.lines, max_scenes=max_scenes)
     story_input.lines = cleaned_lines
@@ -120,10 +139,10 @@ def normalize_story_input(story_data: str | list[str] | dict[str, Any], max_scen
         # ── LLM 분석 (우선) ──────────────────────────────────────────────
         try:
             analyzed = _llm_extract(stripped, max_scenes=max_scenes)
-            print("[StoryPipeline] LLM 프롬프트 추출 성공")
+            print("[KleinPipeline] LLM 프롬프트 추출 성공")
             return normalize_story_input(analyzed, max_scenes=max_scenes)
         except Exception as e:
-            print(f"[StoryPipeline] LLM 추출 실패, 키워드 매핑으로 fallback: {e}")
+            print(f"[KleinPipeline] LLM 추출 실패, 키워드 매핑으로 fallback: {e}")
 
         # ── 키워드 매핑 fallback ─────────────────────────────────────────
         analyzed = _analyze_story(stripped)
@@ -253,14 +272,37 @@ def build_world_profile(theme: str) -> WorldProfile:
 
 
 def build_character_bible(characters: list[StoryCharacter]) -> dict[str, str]:
-    """캐릭터 메타데이터를 시각 묘사로 압축한다."""
+    """캐릭터 메타데이터를 시각 묘사로 압축한다.
+
+    LLM이 생성한 visual_hint (era-accurate, detailed) 우선 사용.
+    LLM 미사용 시에만 config의 fallback 매핑 사용.
+    """
+    # 종(species)별 해부학적 특징 강조 (이미지 모델이 헷갈리지 않도록)
+    SPECIES_ANATOMY: dict[str, str] = {
+        "rabbit": "rabbit with LONG upright ears (NOT dog ears), short round cottontail, rabbit snout with split lip, hind legs longer than front legs",
+        "tiger": "tiger with striped fur, round ears, feline face with whiskers, thick tail",
+        "fox": "fox with pointed ears, bushy thick tail, narrow pointed snout",
+        "bear": "bear with round ears, broad flat face, stocky body",
+        "cat": "cat with pointy triangular ears, narrow face, long thin tail",
+        "dog": "dog with floppy or upright ears, broad snout, wagging tail",
+        "turtle": "turtle with domed shell on back, stubby legs, short neck",
+        "frog": "frog with wide flat head, bulging eyes, webbed feet, no tail",
+        "dragon": "dragon with horns, scales, wings, clawed feet, long tail",
+        "deer": "deer with antlers (if male), slender legs, large gentle eyes",
+    }
+
     bible: dict[str, str] = {}
     for character in characters:
-        # LLM visual_hint가 충분하면 그대로 사용
+        # LLM visual_hint가 충분하면 그대로 사용 + species 해부학 앞에 추가
         if character.visual_hint and len(character.visual_hint.split()) >= 5:
             vh = character.visual_hint
+            species_key = (character.species or "").lower()
+            # species가 visual_hint에 없으면 앞에 추가
             if character.species and character.species.lower() not in vh.lower():
-                vh = f"cute {character.species}, {vh}"
+                vh = f"{character.species}, {vh}"
+            # 해부학적 특징 강조 추가 (이미지 모델 혼동 방지)
+            if species_key in SPECIES_ANATOMY:
+                vh = f"{vh}. ANATOMY: {SPECIES_ANATOMY[species_key]}"
             bible[character.id] = vh
             continue
 
@@ -293,9 +335,8 @@ def build_scene_plans(
     world: WorldProfile,
     character_bible: dict[str, str],
 ) -> list[ScenePlan]:
-    """스토리 한 줄마다 하나의 FLUX 자연어 프롬프트를 만든다."""
+    """스토리 한 줄마다 하나의 Klein 자연어 프롬프트를 만든다."""
     char_by_id = {ch.id: ch for ch in story_input.characters}
-
     scenes: list[ScenePlan] = []
     llm_prompts = story_input.scene_prompts
     llm_focus = story_input.scene_focus_characters
@@ -324,15 +365,13 @@ def build_scene_plans(
             scene_chars=scene_chars,
         )
 
-        scenes.append(
-            ScenePlan(
-                page_index=index,
-                source_text=line,
-                scene_spec=scene_spec,
-                prompt=prompt,
-                character_ids=scene_spec.focus_character_ids,
-            )
-        )
+        scenes.append(ScenePlan(
+            page_index=index,
+            source_text=line,
+            scene_spec=scene_spec,
+            prompt=prompt,
+            character_ids=scene_spec.focus_character_ids,
+        ))
     return scenes
 
 
@@ -386,9 +425,12 @@ def build_scene_spec(
 
     is_multi = len(focus_character_ids) >= 2
     if is_multi:
-        staging_hint = "Both characters are large and clearly visible in the foreground. They are separate individuals, not merged."
+        staging_hint = (
+            "Both characters are clearly separate individuals. "
+            "Do NOT merge or blend them into one figure."
+        )
     else:
-        staging_hint = "The character is large and prominently placed in the foreground."
+        staging_hint = "The character is prominently placed in the scene."
 
     return SceneSpec(
         page_index=page_index,
@@ -399,7 +441,7 @@ def build_scene_spec(
     )
 
 
-# ── FLUX 자연어 프롬프트 빌더 ────────────────────────────────────────────────
+# ── Klein 자연어 프롬프트 빌더 ────────────────────────────────────────────────
 
 
 def build_prompt(
@@ -408,18 +450,17 @@ def build_prompt(
     character_bible: dict[str, str],
     scene_chars: list[StoryCharacter],
 ) -> str:
-    """FLUX T5 인코더용 자연어 프롬프트를 생성한다.
+    """FLUX.2-klein-4B Qwen3 인코더용 자연어 프롬프트.
 
-    GPT-4o가 추출한 visual_hint를 직접 사용하여
-    하드코딩된 매핑에 의존하지 않는다.
+    핵심 원칙:
+    - LLM이 생성한 scene_prompt(동적 구도 + 감정 + 카메라 앵글)를 그대로 사용
+    - LLM이 생성한 visual_hint(시대 고증된 묘사)를 그대로 사용
+    - 프롬프트 빌더는 구조를 잡는 역할만, 내용은 LLM 결과를 최대한 보존
     """
     # 1. 스타일
-    style = (
-        "A children's picture book illustration in flat cartoon style "
-        "with bold outlines and soft pastel colors."
-    )
+    style = STYLE_PREFIX
 
-    # 2. 캐릭터 묘사 — LLM의 visual_hint 직접 사용
+    # 2. 캐릭터 묘사 — LLM visual_hint 우선 (시대 고증 포함)
     char_parts = []
     for i, ch in enumerate(scene_chars):
         if ch.visual_hint and len(ch.visual_hint.split()) >= 3:
@@ -428,55 +469,50 @@ def build_prompt(
             desc = character_bible[ch.id]
         else:
             if ch.species:
-                desc = f"a cute {ch.species}"
+                desc = f"a {ch.species}"
             elif ch.job:
                 desc = f"a {ch.job}"
             else:
                 desc = "a storybook character"
 
-        # 동물/사람 구분
+        # 동물/사람 체형 명시 (LLM이 놓쳤을 때 보강)
         if ch.type == "animal" or ch.species:
-            desc = f"{desc}. This character is an animal with an animal body"
+            if "animal body" not in desc and "full animal" not in desc:
+                desc = f"{desc} (full animal body, NOT human anatomy)"
         elif ch.type == "human":
-            desc = f"{desc}. This character is a human person"
-
-        # 2인 이상일 때 위치 지정
-        if len(scene_chars) == 2:
-            position = "on the left side" if i == 0 else "on the right side"
-            desc = f"{desc}, positioned {position}"
+            desc = f"{desc} (storybook-style human: rounded face, large expressive eyes, warm simplified features, NOT realistic)"
 
         char_parts.append(desc)
 
-    # 캐릭터 수 문장
+    # 캐릭터 수에 따른 문장 구성
     if len(char_parts) == 1:
-        char_sentence = f"There is exactly one character: {char_parts[0]}."
+        char_sentence = f"Character: {char_parts[0]}."
     elif len(char_parts) == 2:
         char_sentence = (
-            f"There are exactly two separate characters. "
-            f"First character: {char_parts[0]}. "
-            f"Second character: {char_parts[1]}."
+            f"Two characters in this scene — "
+            f"LEFT: {char_parts[0]}. "
+            f"RIGHT: {char_parts[1]}. "
+            f"They are SEPARATE individuals, do NOT merge them."
         )
     else:
-        numbered = " ".join(f"Character {i+1}: {p}." for i, p in enumerate(char_parts))
-        char_sentence = f"There are exactly {len(char_parts)} characters. {numbered}"
+        numbered = " ".join(f"[{i+1}] {p}." for i, p in enumerate(char_parts))
+        char_sentence = f"{len(char_parts)} characters: {numbered}"
 
-    # 3. 장면 행동/상황
-    action = ""
-    if scene_spec.narrative_hint:
-        action = f"The scene shows: {scene_spec.narrative_hint}."
+    # 3. 장면 — LLM의 동적 구도/감정/카메라 앵글 그대로 사용
+    action = f"Scene: {scene_spec.narrative_hint}." if scene_spec.narrative_hint else ""
 
-    # 4. 배경
-    background = f"The background is {world.positive_hint}."
+    # 4. 배경/세계관
+    background = f"Setting: {world.positive_hint}."
 
-    # 5. 구도
-    composition = scene_spec.staging_hint
+    # 5. 다중 캐릭터 분리 힌트 (multi-char일 때만)
+    staging = scene_spec.staging_hint if len(scene_chars) >= 2 else ""
 
-    # 조합
     parts = [style, char_sentence]
     if action:
         parts.append(action)
     parts.append(background)
-    parts.append(composition)
+    if staging:
+        parts.append(staging)
 
     return " ".join(parts)
 
@@ -485,7 +521,7 @@ def build_prompt(
 
 
 def extract_scene_keywords(line: str) -> str:
-    """한국어/영어 문장에서 장면 묘사용 영어 키워드를 추출한다."""
+    """한국어/영어 문장에서 장면 묘사용 영어 키워드를 추출한다 (LLM 실패 시 fallback)."""
     LOCATION_MAP: list[tuple[str, str]] = [
         ("궁궐", "palace courtyard"), ("관아", "government office"),
         ("기와집", "tiled-roof house"), ("초가집", "thatched cottage"),
