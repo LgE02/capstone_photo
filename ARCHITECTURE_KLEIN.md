@@ -12,34 +12,28 @@
 
 ## 1. 모델 개선 이력
 
-### 🔴 1단계: SDXL + 공개 LoRA 비교 실험
+### 🔴 1단계: SDXL 기본 적용
 
 **구성**
 - 베이스 모델: `stabilityai/stable-diffusion-xl-base-1.0` (SDXL 1.0)
-- 사용 LoRA (공개 모델 3종):
-  - `StoryBook Redmond V2` (artificialguybr) — 동화책 스타일
-  - `littletinies` (alvdansen) — 귀여운 미니어처 스타일
-  - `watercolor yarn art` (pcuenq) — 수채화 스타일
 - 프롬프트: CLIP 방식 (positive + negative 분리)
 - 설정: 30 steps, guidance_scale=7.5, 1024×1024
 
 **이미지 생성 시간**
-| 조합 | 해상도 | 소요시간 (RTX 3060 12GB) |
+| 설정 | 해상도 | 소요시간 (RTX 3060 12GB) |
 |------|--------|--------------------------|
-| SDXL + StoryBook LoRA | 1024×1024 | **약 20~25초/장** |
-| SDXL + littletinies | 1024×1024 | **약 20~25초/장** |
-| SD 1.5 + LoRA | 512×512 | **약 10~12초/장** |
+| SDXL 기본 | 1024×1024 | **약 20~25초/장** |
 
 **문제점**
 | 문제 | 내용 |
 |------|------|
-| 캐릭터 커스터마이징 불가 | 남의 LoRA → 우리 동화 캐릭터 없음 |
-| 한국 전래동화 특화 안됨 | 공개 LoRA는 서양 동화 스타일 위주 |
+| 스타일 제어 불가 | 동화책 삽화 스타일로 유도가 어려움 |
 | 캐릭터 일관성 없음 | 장면마다 외형 달라짐 |
 | CLIP 토큰 한계 | CLIP-L 77토큰 → 상세 묘사 불가 |
 | negative_prompt 의존 | 원치 않는 요소를 negative로 제거해야 함 |
+| 한국 전래동화 고증 부족 | 시대·문화 배경 반영 어려움 |
 
-**결론**: 공개 LoRA로는 커스텀 캐릭터 구현 불가. 자체 LoRA 학습 필요.
+**결론**: 기본 SDXL로는 동화 삽화 스타일 제어 불가. 자체 LoRA 학습 필요.
 
 ---
 
@@ -152,67 +146,76 @@
 | 캐릭터 일관성 | 레퍼런스 이미지 1회 생성 → 전 장면 `image=[ref]` 주입 |
 | 속도 | 10~15초/장 (이전 30~45초 대비 2~3배 향상) |
 | 토큰 한도 | 40,960토큰 → 상세 시대 고증 묘사 가능 |
-| 시대 고증 자동화 | GPT-4o가 스토리 맥락에서 직접 시대/문화 판단 (하드코딩 X) |
+| 시대 고증 자동화 | 요청의 테마(KOREAN_TRADITIONAL 등)를 기반으로 GPT-4o가 캐릭터별 세부 복식·소품·헤어 묘사 생성 (하드코딩 X) |
 | 동적 구도 | LLM이 매 장면 다른 카메라 앵글 지정 (close-up, wide shot, low angle 등) |
 | 표정 표현 | 만화적 과장 표현 룰 (눈이 커지기, 말풍선, 물음표 등) |
 
-**현재 남은 과제**
-- 참조 이미지 품질에 따른 일관성 편차
-- 다중 캐릭터 장면에서 캐릭터 병합 현상 간헐적 발생
+**현재 미해결 과제**
+| 문제 | 원인 | 상태 |
+|------|------|------|
+| 레퍼런스 있을 때 — 장면 감정/포즈 고정 | `image=[ref]`가 외형과 포즈를 함께 복제 → 장면 프롬프트와 충돌 | 🔴 미해결 |
+| 레퍼런스 없을 때 — 캐릭터 외형 매 장면 변함 | 일관성 기준 이미지 없음 → 모델이 매번 다르게 생성 | 🔴 미해결 |
+| 한국 전통 복식 편향 (중국 한푸로 출력) | FLUX 학습 데이터가 중국 의상 비중 훨씬 높음 → 프롬프트로 근본 해결 불가 | 🔴 모델 한계 |
+| 동물 해부학 오류 (토끼 귀 등) | 프롬프트 묘사 강화로 일부 개선, 완전 해결은 어려움 | 🟡 부분 개선 |
 
 ---
 
 ## 2. 현재 파이프라인 흐름
 
 ```
-클라이언트 (동화 생성 모델)
+클라이언트
     │  POST /generate
     │  { story_text, protagonist_type, theme, seed }
     ▼
-┌─────────────────────────────────────────────┐
-│  FastAPI 서버 (api_klein/app.py) 포트 8001   │
-│  ├─ SSE 스트리밍 응답 연결                   │
-│  └─ KleinJobExecutor 큐에 작업 등록          │
-└─────────────────────────────────────────────┘
-    │  백그라운드 워커 스레드
+┌─────────────────────────────────────────────────────────────┐
+│  routes.py                                                  │
+│  1. JobStore.create() → Job 생성 (job_id, status=queued)    │
+│  2. asyncio.Queue 생성 (SSE 이벤트용)                       │
+│  3. KleinJobExecutor.submit(job_id, on_event)               │
+│     └─ max_queue=3 초과 시 → 503 반환                       │
+│  4. EventSourceResponse 반환 (SSE 스트리밍 연결 유지)        │
+└─────────────────────────────────────────────────────────────┘
+    │  (asyncio.Queue ↔ 백그라운드 스레드 브릿지)
     ▼
-┌─────────────────────────────────────────────┐
-│  1. 스토리 분석                              │
-│  build_story_plan(story_text)               │  api_klein/pipeline/story_pipeline.py
-│  ├─ GPT-4o 분석  ← 1순위                    │  api_klein/pipeline/llm_prompt_extractor.py
-│  │   ├─ 문화/시대 자동 감지 (하드코딩 X)     │
-│  │   ├─ 캐릭터 시대 고증 visual_hint 생성    │
-│  │   ├─ 매 장면 다른 카메라 앵글 지정        │
-│  │   └─ 만화적 과장 표현 포함               │
-│  └─ 키워드 매핑  ← fallback                 │  api_klein/pipeline/story_analyzer.py
-│  → StoryPlan (캐릭터, 테마, 장면 프롬프트)   │
-└─────────────────────────────────────────────┘
-    │  SSE: event: analyzing
-    ▼
-┌─────────────────────────────────────────────┐
-│  2. 캐릭터 레퍼런스 생성 (1회)               │
-│  generator.generate_character_reference()   │  api_klein/pipeline/generator_klein.py
-│  ├─ 캐릭터 visual_hint → 텍스트 프롬프트    │
-│  └─ 참조 이미지 1장 생성 & 저장             │
-│  SSE: event: character_reference            │
-└─────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────┐
-│  3. 페이지별 삽화 생성                       │
-│  for scene in story_plan.scenes:            │
-│    generator.generate(                      │
-│      prompt=scene.prompt,                  │
-│      image=[character_reference]  ← 참조    │
-│    )                                        │
-│  ├─ 4 steps, guidance_scale=1.0            │
-│  ├─ 캐릭터 외형 유지 (참조 이미지)           │
-│  └─ 장면/구도는 LLM 프롬프트로 제어         │
-│  SSE: event: page_complete (매 페이지)       │
-└─────────────────────────────────────────────┘
-    │  SSE: event: complete
-    ▼
-  이미지 URL 반환 (/images/{job_id}/page_01.png)
+┌─────────────────────────────────────────────────────────────┐
+│  KleinJobExecutor (단일 워커 스레드 — GPU 독점)              │
+│                                                             │
+│  [1] 스토리 분석  (job.status = "analyzing")                │
+│      build_story_plan(story_text)                           │
+│      ├─ GPT-4o  ← 1순위                                    │
+│      │   ├─ 캐릭터 시대 고증 visual_description 생성        │
+│      │   ├─ 매 장면 카메라 앵글 + 감정/행동 scene_prompt    │
+│      │   └─ theme 감지 (LLM 결과)                          │
+│      └─ 키워드 매핑  ← GPT-4o 실패 시 fallback             │
+│                                                             │
+│      ※ LLM 감지 theme ≠ 요청 theme → 요청 theme 우선 적용  │
+│         (world/scene_plans 재빌드)                          │
+│                                                             │
+│      SSE emit → "analyzing" { total_pages }                 │
+│                                                             │
+│  [2] 캐릭터 레퍼런스 생성                                   │
+│      generator.generate_character_reference(char_prompt)    │
+│      └─ 저장: outputs/klein_jobs/{job_id}/page_00.png       │
+│      SSE emit → "character_reference" { image_url }         │
+│                                                             │
+│  [3] 페이지별 삽화 생성  (job.status = "generating")        │
+│      for scene in story_plan.scenes:                        │
+│        generator.generate(prompt, use_reference=True)       │
+│        └─ 저장: outputs/klein_jobs/{job_id}/page_NN.png     │
+│        SSE emit → "page_complete" { page_index, image_url } │
+│                                                             │
+│      SSE emit → "complete" { total_pages, total_elapsed }   │
+└─────────────────────────────────────────────────────────────┘
+
+클라이언트는 SSE로 실시간 수신:
+  analyzing          → { total_pages: 10 }
+  character_reference→ { image_url: "/images/{job_id}/page_00.png" }
+  page_complete      → { page_index: 1, image_url: "...", elapsed: 12.3 }
+  ...
+  complete           → { total_pages: 10, total_elapsed: 130.0 }
+
+GET /jobs/{job_id}   → Job 전체 상태 조회 (SSE 연결 끊긴 후 재조회용)
+GET /images/{job_id}/page_NN.png  → 생성된 이미지 정적 파일
 ```
 
 ---
@@ -234,11 +237,15 @@ api_klein/                          ← Klein API 진입점 (api/ 완전 독립)
     story_analyzer.py               # 키워드 매핑 fallback 분석기
     story_pipeline.py               # 완전 독립 파이프라인 + Klein 프롬프트 빌더
 
-test_pipeline_klein.py              # CLI 통합 테스트 (Story A/B)
-test_klein/
-  test_generate.py                  # 단순 이미지 생성 테스트
-  outputs/                          # 테스트 결과 이미지
-outputs/klein_jobs/                 # API 생성 이미지 저장
+test_pipeline_klein.py              # CLI 통합 테스트 (Story A/B, --no-ref 옵션)
+outputs/
+  test_klein/
+    story_a_with_ref/               # 레퍼런스 있음 결과
+    story_a_no_ref/                 # 레퍼런스 없음 결과 (--no-ref)
+    story_b_with_ref/
+    story_b_no_ref/
+      reference/                    # 캐릭터 레퍼런스 이미지
+  klein_jobs/                       # API 서버 생성 이미지
 ```
 
 ---
@@ -282,24 +289,28 @@ Response: SSE (text/event-stream)
 
 ## 5. 핵심 설계 결정
 
-### GPT-4o 기반 시대 고증 자동화 (하드코딩 제거)
+### GPT-4o 기반 캐릭터 시대 고증 자동화 (하드코딩 제거)
+
+요청에는 이미 `theme` (KOREAN_TRADITIONAL 등)이 포함되어 있다.
+GPT-4o의 역할은 테마를 감지하는 게 아니라, 그 테마 안에서 **캐릭터별 세부 외형을 정확하게 묘사**하는 것.
 
 **기존 방식 (문제)**
 ```python
-# ❌ 나무꾼만 하드코딩 → 다른 직업에는 적용 안 됨
+# ❌ 나무꾼만 하드코딩 → 등장인물이 바뀌면 적용 안 됨
 "나무꾼 → wearing rough beige hemp jeogori..."
 "선녀 → flowing white Korean cheonui..."
 ```
 
 **현재 방식 (해결)**
 ```
-GPT-4o에게: "스토리의 문화적 배경과 시대를 먼저 파악하고,
-            해당 시대에 맞는 정확한 복식/외형으로 캐릭터를 묘사하라."
+GPT-4o에게: "요청 테마(KOREAN_TRADITIONAL)를 기반으로,
+            이 캐릭터가 실제 그 시대/문화에서 어떤 복식·외형을 가졌는지
+            네 지식으로 직접 묘사하라."
 ```
-- 어떤 직업/캐릭터가 나와도 GPT-4o가 스스로 시대 고증
+- 어떤 직업/캐릭터가 나와도 GPT-4o가 시대 고증된 묘사 생성
 - 조선시대면 한복, 중세 유럽이면 tunic/chainmail, 판타지면 판타지 의상
 
-### 캐릭터 일관성
+### 캐릭터 일관성 (레퍼런스 방식)
 
 ```
 1회: generate_character_reference(visual_hint)
@@ -308,6 +319,14 @@ GPT-4o에게: "스토리의 문화적 배경과 시대를 먼저 파악하고,
 이후 모든 장면: generate(prompt, image=[self._character_reference])
      → 모델이 레퍼런스 이미지의 캐릭터 외형을 유지하며 다른 배경/포즈 생성
 ```
+
+**알려진 트레이드오프**
+| 모드 | 장점 | 단점 |
+|------|------|------|
+| `--no-ref` (레퍼런스 없음) | 장면 감정·포즈 자유롭게 표현 | 매 장면 캐릭터 외형이 달라짐 |
+| 기본 (레퍼런스 있음) | 캐릭터 외형 일관성 유지 | `image=[ref]`가 포즈까지 복제 → 표정·구도 제한 |
+
+→ 현재로서는 스토리 표현력과 캐릭터 일관성을 동시에 완전히 해결하는 방법 없음.
 
 ### LLM 장면 프롬프트 우선 사용
 
@@ -350,8 +369,10 @@ GPT-4o에게: "스토리의 문화적 배경과 시대를 먼저 파악하고,
 uvicorn api_klein.app:app --host 0.0.0.0 --port 8001
 
 # CLI 통합 테스트
-python test_pipeline_klein.py --story-a   # 한국 전통: 토끼+나무꾼+선녀
-python test_pipeline_klein.py --story-b   # 유럽 중세: 릴리아+요정
+python test_pipeline_klein.py --story-a           # 한국 전통: 토끼+나무꾼+선녀 (레퍼런스 있음)
+python test_pipeline_klein.py --story-a --no-ref  # 레퍼런스 없이 생성 (표정 자유, 일관성 낮음)
+python test_pipeline_klein.py --story-b           # 유럽 중세: 릴리아+요정
+python test_pipeline_klein.py --seed 42 --output outputs/custom_dir
 ```
 
 ---

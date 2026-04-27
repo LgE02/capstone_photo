@@ -32,6 +32,10 @@ STYLE_PREFIX = (
     "small rounded nose, simplified cute features, short compact body, "
     "warm and approachable storybook aesthetic, "
     "NOT anime, NOT realistic, NOT photorealistic. "
+    "Characters must show CLEAR EXAGGERATED EMOTIONS through face and body: "
+    "wide open mouth when surprised, tears streaming when sad, "
+    "crescent-shaped eyes when happy, trembling body when scared, "
+    "clenched fists when angry. "
     "Richly detailed backgrounds with atmospheric depth and warm ambient lighting. "
 )
 
@@ -501,8 +505,9 @@ def build_prompt(
     # 3. 장면 — LLM의 동적 구도/감정/카메라 앵글 그대로 사용
     action = f"Scene: {scene_spec.narrative_hint}." if scene_spec.narrative_hint else ""
 
-    # 4. 배경/세계관
-    background = f"Setting: {world.positive_hint}."
+    # 4. 배경/세계관 — LLM scene_prompt에 배경 정보가 이미 포함되어 있으므로
+    #    고정 배경 대신 세계관 분위기만 짧게 힌트 (매 장면 동일 배경 방지)
+    background = f"World: {world.expansion_key.replace('_', ' ').lower()} setting."
 
     # 5. 다중 캐릭터 분리 힌트 (multi-char일 때만)
     staging = scene_spec.staging_hint if len(scene_chars) >= 2 else ""
