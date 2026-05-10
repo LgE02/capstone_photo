@@ -130,7 +130,7 @@
 - Transformer: `Photoroom/FLUX.2-klein-4b-fp8-diffusers` (bf16 버전, ~7.7GB)
 - 텍스트 인코더: Qwen3 (40,960 토큰 — T5 대비 80배)
 - 4 steps, guidance_scale=1.0, CPU offload
-- `api_klein/` 폴더 — `api/` 완전 독립 (import 없음)
+- `api_klein/` 단일 파이프라인 (옛 `api/` FLUX.1-schnell 흐름은 제거됨)
 
 **이미지 생성 시간**
 | 설정 | 소요시간 (RTX 3060 12GB) |
@@ -182,11 +182,10 @@
 │                                                             │
 │  [1] 스토리 분석  (job.status = "analyzing")                │
 │      build_story_plan(story_text)                           │
-│      ├─ GPT-4o  ← 1순위                                    │
-│      │   ├─ 캐릭터 시대 고증 visual_description 생성        │
-│      │   ├─ 매 장면 카메라 앵글 + 감정/행동 scene_prompt    │
-│      │   └─ theme 감지 (LLM 결과)                          │
-│      └─ 키워드 매핑  ← GPT-4o 실패 시 fallback             │
+│      └─ GPT-4o (단일 경로 — 실패 시 예외 propagate)         │
+│          ├─ 캐릭터 시대 고증 visual_description 생성        │
+│          ├─ 매 장면 카메라 앵글 + 감정/행동 scene_prompt    │
+│          └─ theme 감지 (LLM 결과)                          │
 │                                                             │
 │      ※ LLM 감지 theme ≠ 요청 theme → 요청 theme 우선 적용  │
 │         (world/scene_plans 재빌드)                          │
@@ -223,19 +222,18 @@ GET /images/{job_id}/page_NN.png  → 생성된 이미지 정적 파일
 ## 3. 디렉토리 구조
 
 ```
-api_klein/                          ← Klein API 진입점 (api/ 완전 독립)
+api_klein/                          ← Klein API 진입점 (단일 파이프라인)
   app.py                            # FastAPI 앱 (포트 8001) + lifespan
   schemas.py                        # Pydantic 요청/응답 모델
   routes.py                         # POST /generate (SSE), GET /jobs/{id}
   tasks.py                          # Job, JobStore, KleinJobExecutor
   pipeline/
     __init__.py
-    config.py                       # 모델 설정, 테마 확장, 캐릭터 힌트
+    config.py                       # 출력/테마 설정
     generator_klein.py              # FLUX.2-klein-4B 이미지 생성기
     model_manager.py                # KleinModelManager 싱글톤
     llm_prompt_extractor.py         # GPT-4o 스토리 분석 (시대 고증 자동화)
-    story_analyzer.py               # 키워드 매핑 fallback 분석기
-    story_pipeline.py               # 완전 독립 파이프라인 + Klein 프롬프트 빌더
+    story_pipeline.py               # 분석 결과 → Klein 자연어 프롬프트 조립
 
 test_pipeline_klein.py              # CLI 통합 테스트 (Story A/B, --no-ref 옵션)
 outputs/

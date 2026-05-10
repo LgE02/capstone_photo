@@ -11,10 +11,7 @@ lora_output/
 outputs/
 
 # Dataset images (too large for git, keep locally)
-dataset/raw/
-dataset/retrain_raw_only/
-dataset/retrain_mixed/
-dataset/retrain_after03/
+dataset/
 
 # IDE
 .idea/

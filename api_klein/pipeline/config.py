@@ -1,21 +1,8 @@
-"""Klein 파이프라인 공통 설정 (api/ 독립 복사본)."""
+"""Klein 파이프라인 공통 설정."""
 
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-BASE_MODELS = {
-    "flux_klein_4b": {
-        "model_id": "black-forest-labs/FLUX.2-klein-4B",
-        "transformer_id": "Photoroom/FLUX.2-klein-4b-fp8-diffusers",
-        "transformer_subfolder": "transformer_bf16",
-        "type": "flux_klein",
-        "description": "FLUX.2-klein-4B — 4-step reference-image model (Qwen3 40k tokens)",
-        "default_size": (1024, 1024),
-        "num_inference_steps": 4,
-        "guidance_scale": 1.0,
-    },
-}
 
 OUTPUT_CONFIG = {
     "output_dir": str(PROJECT_ROOT / "outputs" / "klein_jobs"),
@@ -105,54 +92,3 @@ THEME_CHARACTER_COSTUME_HINTS = {
         "other": "cloud and star decorations",
     },
 }
-
-# ── story_analyzer.py fallback용 (LLM 실패 시 사용) ──────────────────────
-
-CHARACTER_TYPE_HINTS = {
-    "human": "cute human character, round face, big expressive eyes, child-friendly proportions",
-    "animal": "cute anthropomorphic animal character, round face, big eyes, soft rounded body",
-    "other": "storybook character, simple rounded silhouette, cute details",
-}
-
-JOB_HINTS = {
-    "king": "wearing red gonryongpo dragon robe, royal golden crown, magnificent Joseon king",
-    "queen": "wearing elaborate royal hanbok, ornate golden hair ornament, Korean queen",
-    "prince": "wearing royal blue hanbok, ornate headpiece, Joseon prince",
-    "princess": "wearing vibrant royal hanbok, elegant hair ornament, Korean princess",
-    "magistrate": "wearing dark navy official hanbok, tall black gat horsehair hat, Joseon official",
-    "scholar": "wearing white jeogori and black baji, black gat horsehair hat, Joseon scholar",
-    "farmer": "wearing plain beige jeogori and baji, straw hat, Korean farmer",
-    "monk": "wearing grey monk robe, simple prayer beads, Korean Buddhist monk",
-    "soldier": "wearing Korean traditional armor, red tassel, Joseon soldier",
-    "merchant": "wearing travel hanbok, carrying large cloth bundle, Korean merchant",
-    "villager": "wearing simple plain hanbok, everyday Korean village clothing",
-    "witch": "wearing dark magical outfit, pointed hat, storybook witch",
-    "wizard": "wearing long magical robe, holding glowing staff, storybook wizard",
-}
-
-SPECIES_HINTS = {
-    "frog":     "small cute frog, chubby face, big bright eyes, expressive",
-    "rabbit":   "small fluffy rabbit, long ears, big bright eyes, expressive",
-    "tiger":    "friendly chubby tiger, round face, soft stripes, expressive",
-    "fox":      "small cute fox, fluffy tail, pointy ears, expressive",
-    "bear":     "round chubby bear, gentle eyes, small snout, expressive",
-    "cat":      "small cute cat, pointy ears, big round eyes, expressive",
-    "dog":      "friendly small dog, floppy ears, bright eyes, expressive",
-    "deer":     "gentle small deer, tiny antlers, big soft eyes, expressive",
-    "bird":     "small round bird, big bright eyes, fluffy feathers",
-    "turtle":   "small round turtle, friendly smile, smooth shell",
-    "dragon":   "small friendly dragon, chubby body, big bright eyes",
-    "lion":     "friendly chubby lion, round face, soft fluffy mane",
-    "monkey":   "small playful monkey, round face, big expressive eyes",
-    "pig":      "small round pig, chubby cheeks, bright eyes, expressive",
-    "snake":    "small cute snake, friendly face, shiny scales, expressive",
-    "wolf":     "friendly fluffy wolf, round face, bright eyes, expressive",
-    "mouse":    "tiny cute mouse, round ears, big bright eyes",
-    "squirrel": "small fluffy squirrel, bushy tail, big bright eyes",
-    "horse":    "cute small pony, flowing mane, big bright eyes",
-    "elephant": "small friendly elephant, big soft ears, bright eyes",
-}
-
-SPECIES_FALLBACK_TEMPLATE = (
-    "cute {species} character, round chubby face, big bright eyes, soft rounded body, picture book"
-)

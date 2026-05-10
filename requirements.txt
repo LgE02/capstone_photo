@@ -1,4 +1,4 @@
-# 동화 삽화 생성 + LoRA 파인튜닝 - 필수 패키지
+# ── 이미지 생성 (FLUX.2-klein-4B) ───────────────────────────
 torch>=2.1.0
 torchvision>=0.16.0
 diffusers>=0.25.0
@@ -9,17 +9,19 @@ huggingface_hub>=0.19.0
 Pillow>=10.0.0
 numpy>=1.24.0
 tqdm>=4.65.0
-fastapi>=0.115.0
-uvicorn>=0.30.0
 
-# LoRA 파인튜닝 필수
-peft>=0.7.0               # LoRA 네트워크 구성
+# ── GPT-4o 스토리 분석 ──────────────────────────────────────
+openai>=1.30.0
+python-dotenv>=1.0.0
 
-# 자동 캡션 생성 (BLIP)
-# transformers에 포함 (추가 설치 불필요)
+# ── 카프카 컨슈머 (입력) + producer (결과 publish) ──────────
+aiokafka>=0.10.0
 
-# 선택: xformers (VRAM 절약 + 속도 향상)
-# pip install xformers
+# ── AWS S3 (이미지 저장) ───────────────────────────────────
+boto3>=1.34.0
 
-# 선택: bitsandbytes (8-bit Adam, VRAM 8GB 이하 환경에서 필요)
+# ── 선택: torchao FP8 양자화 (VRAM 절감) ────────────────────
+# pip install torchao
+
+# ── 선택: bitsandbytes (8-bit 옵티마이저) ──────────────────
 # pip install bitsandbytes

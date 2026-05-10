@@ -85,8 +85,8 @@ class KleinImageGenerator:
         style_prefix = (
             "Children's picture book illustration, "
             "semi-painterly digital art with soft cel shading, "
-            "chibi-style proportions: large round head, big glossy expressive eyes, rosy cheeks, "
-            "warm color palette, soft storybook aesthetic, NOT realistic, NOT anime. "
+            "storybook character proportions with expressive features, "
+            "warm color palette, soft picture-book aesthetic, NOT photorealistic. "
         )
         full_prompt = (
             style_prefix + character_prompt
@@ -123,10 +123,14 @@ class KleinImageGenerator:
         height: int = 1024,
         use_reference: bool = True,
         num_images: int = 1,
+        reference_images: Optional[list[Image.Image]] = None,
     ) -> tuple[list[Image.Image], float]:
         """
         장면 삽화 생성.
-        use_reference=True이고 캐릭터 레퍼런스가 있으면 참조 이미지 적용.
+
+        reference_images가 명시되면 그 리스트를 multi-image로 주입 (등장 역할별 레퍼런스).
+        그 외엔 use_reference=True + self._character_reference 설정된 경우 단일 레퍼런스 사용.
+
         Returns: (PIL Image 리스트, 소요시간)
         """
         if self.pipeline is None:
@@ -146,12 +150,15 @@ class KleinImageGenerator:
             num_images_per_prompt=num_images,
         )
 
-        if use_reference and self._character_reference is not None:
+        if reference_images:
+            kwargs["image"] = list(reference_images)
+        elif use_reference and self._character_reference is not None:
             kwargs["image"] = [self._character_reference]
 
+        ref_count = len(kwargs["image"]) if "image" in kwargs else 0
         print(f"[KleinGenerator] 이미지 생성 중...")
         print(f"  프롬프트: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
-        print(f"  크기: {width}x{height} | 레퍼런스: {'✅' if 'image' in kwargs else '❌'}")
+        print(f"  크기: {width}x{height} | 레퍼런스: {ref_count}장")
 
         start_time = time.time()
         output = self.pipeline(**kwargs)
