@@ -61,10 +61,12 @@ def _build_consumer() -> tuple[AIOKafkaConsumer, list[str]]:
     group_id = _env("KAFKA_GROUP_ID", "illustration-worker")
     security_protocol = _env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT").upper()
 
+    #컨슈머 그룹이 처음 메시지를 읽을 때, 
+    # 가장 오래된 메시지부터 읽을지(latest) 아니면 가장 최근 메시지부터 읽을지(earliest) 설정
     kwargs: dict[str, Any] = {
         "bootstrap_servers": bootstrap,
         "group_id": group_id,
-        "auto_offset_reset": "latest",
+        "auto_offset_reset": "earliest", 
         "enable_auto_commit": False,  # 처리 성공 후 수동 commit
         "max_poll_records": 1,        # 한 번에 1개씩 (단일 컨슈머 + GPU)
         "security_protocol": security_protocol,
