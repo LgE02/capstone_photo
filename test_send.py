@@ -1,10 +1,10 @@
-"""테스트용 INIT + PAGE 메시지를 직접 publish.
+"""Publish INIT and PAGE Kafka messages for local illustration-worker testing.
 
-사용법:
-    python test_send.py            # 기본값으로 INIT + PAGE 1개 보냄
-    python test_send.py --id 9999  # fairytaleId 지정
-
-워커를 띄워둔 상태에서 실행하면 즉시 처리되는 걸 콘솔에서 볼 수 있음.
+Examples:
+    python test_send.py
+    python test_send.py --id 999
+    python test_send.py --character HERO=토끼 --character VILLAIN=거북이 --character DONOR=용왕님
+    python test_send.py --sentences "토끼와 거북이는 용궁으로 가서 용왕님을 만났어요."
 """
 
 from __future__ import annotations
@@ -25,17 +25,57 @@ def _env(name: str, default: str = "") -> str:
     return val.strip() if val else default
 
 
+def _parse_character_arg(raw: str) -> tuple[str, str]:
+    if "=" not in raw:
+        raise argparse.ArgumentTypeError(
+            "character must use ROLE=NAME format, for example HERO=토끼"
+        )
+
+    role, name = raw.split("=", 1)
+    role = role.strip().upper()
+    name = name.strip()
+
+    if not role or not name:
+        raise argparse.ArgumentTypeError(
+            "character must use ROLE=NAME format, for example HERO=토끼"
+        )
+
+    return role, name
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--id", type=int, default=9999, help="fairytaleId (기본 9999)")
-    ap.add_argument("--page", type=int, default=1, help="pageNo (기본 1)")
-    ap.add_argument("--init-only", action="store_true", help="INIT 만 보내고 PAGE 는 안 보냄")
-    ap.add_argument("--page-only", action="store_true", help="PAGE 만 보냄 (INIT 이미 보냈을 때)")
+    ap.add_argument("--id", type=int, default=9999, help="fairytaleId (default: 9999)")
+    ap.add_argument("--page", type=int, default=1, help="pageNo (default: 1)")
+    ap.add_argument("--init-only", action="store_true", help="publish only INIT")
+    ap.add_argument("--page-only", action="store_true", help="publish only PAGE")
+    ap.add_argument(
+        "--setting",
+        default="KOREAN_TRADITIONAL",
+        help="INIT setting value (default: KOREAN_TRADITIONAL)",
+    )
+    ap.add_argument(
+        "--character-type",
+        default="ANIMAL",
+        help="INIT character_type value (default: ANIMAL)",
+    )
+    ap.add_argument(
+        "--character",
+        action="append",
+        type=_parse_character_arg,
+        default=[],
+        help="character mapping in ROLE=NAME format; can be repeated",
+    )
+    ap.add_argument(
+        "--sentences",
+        default="토끼와 거북이는 용궁으로 가서 용왕님을 만났어요.",
+        help="PAGE sentences value; include \\n for multi-line input",
+    )
     args = ap.parse_args()
 
     bootstrap = _env("KAFKA_BOOTSTRAP_SERVERS")
     if not bootstrap:
-        print("❌ KAFKA_BOOTSTRAP_SERVERS 비어 있음")
+        print("KAFKA_BOOTSTRAP_SERVERS is empty")
         return 1
 
     topic_init = _env("KAFKA_TOPIC_INIT", "fairytale_created")
@@ -58,48 +98,43 @@ async def main() -> int:
     await producer.start()
 
     fid = args.id
+    characters = dict(args.character) if args.character else {
+        "HERO": "토끼",
+        "VILLAIN": "거북이",
+        "DONOR": "용왕님",
+    }
 
     try:
-        # ── INIT 보내기 ───────────────────────────────────────
         if not args.page_only:
             init_payload = {
                 "fairytaleId": fid,
-                "setting": "KOREAN_TRADITIONAL",
-                "character_type": "ANIMAL",
-                "characters": {
-                    "HERO": "강아지",
-                    "VILLAIN": "독수리",
-                    "DISPATCHER": "자라",
-                },
+                "setting": args.setting,
+                "character_type": args.character_type.upper(),
+                "characters": characters,
             }
             await producer.send_and_wait(
                 topic_init,
                 json.dumps(init_payload, ensure_ascii=False).encode("utf-8"),
                 key=str(fid).encode("utf-8"),
             )
-            print(f"✅ INIT publish → {topic_init}")
-            print(f"   {init_payload}")
+            print(f"INIT publish -> {topic_init}")
+            print(init_payload)
 
-        # ── PAGE 보내기 ───────────────────────────────────────
         if not args.init_only:
             page_payload = {
                 "fairytaleId": fid,
                 "pageNo": args.page,
-                "sentences": (
-                    "옛날 옛적에 자라가 살았어요.\n"
-                    "어느 날 자라는 강아지를 만났어요.\n"
-                    "둘은 함께 모험을 떠났어요."
-                ),
+                "sentences": args.sentences,
             }
             await producer.send_and_wait(
                 topic_page,
                 json.dumps(page_payload, ensure_ascii=False).encode("utf-8"),
                 key=str(fid).encode("utf-8"),
             )
-            print(f"✅ PAGE publish → {topic_page}")
-            print(f"   {page_payload}")
+            print(f"PAGE publish -> {topic_page}")
+            print(page_payload)
 
-        print("\n워커 콘솔에서 처리되는 거 확인해 보세요.")
+        print("\nCheck the worker console for generation progress.")
         return 0
     finally:
         await producer.stop()

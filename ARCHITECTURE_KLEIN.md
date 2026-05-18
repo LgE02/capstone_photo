@@ -1,389 +1,491 @@
-# 시스템 아키텍처 — FLUX.2-klein-4B 동화 삽화 생성 파이프라인
+# ARCHITECTURE_KLEIN
 
-동화 텍스트를 입력받아 **캐릭터 일관성이 유지된** 장면별 삽화를 자동 생성하는 파이프라인.
+`FLUX.2-klein-4B` 기반 동화 삽화 생성 워커의 현재 아키텍처를 정리한 문서입니다.  
+현재 구현의 중심은 FastAPI 서버가 아니라 `worker.py` 기반 Kafka 소비형 파이프라인입니다.
 
-- **이미지 생성 모델**: FLUX.2-klein-4B (bf16)
-- **스토리 분석**: GPT-4o (OpenAI API)
-- **프롬프트 방식**: Qwen3 인코더용 자연어 문장 (최대 40,960 토큰)
-- **캐릭터 일관성**: 참조 이미지 기반 (레퍼런스 이미지 → 모든 장면에 주입)
-- **개발 환경**: RTX 3060 12GB VRAM / RAM 64GB / CUDA 12.x
+## 1. 목표
 
----
+이 시스템은 동화의 전체 캐릭터 설정을 먼저 고정한 뒤, 페이지별 장면을 일관된 스타일로 생성하는 것을 목표로 합니다.
 
-## 1. 모델 개선 이력
+핵심 요구사항은 아래와 같습니다.
 
-### 🔴 1단계: SDXL 기본 적용
+- 캐릭터 외형 일관성 유지
+- 페이지별 장면 분리 생성
+- 문화권과 시대에 맞는 캐릭터/배경 묘사
+- 생성 결과를 외부 시스템이 비동기로 받을 수 있는 구조
+- GPU 1장 환경에서도 운영 가능한 단순한 워커 구조
 
-**구성**
-- 베이스 모델: `stabilityai/stable-diffusion-xl-base-1.0` (SDXL 1.0)
-- 프롬프트: CLIP 방식 (positive + negative 분리)
-- 설정: 30 steps, guidance_scale=7.5, 1024×1024
+## 2. 현재 아키텍처 요약
 
-**이미지 생성 시간**
-| 설정 | 해상도 | 소요시간 (RTX 3060 12GB) |
-|------|--------|--------------------------|
-| SDXL 기본 | 1024×1024 | **약 20~25초/장** |
+현재 파이프라인은 크게 5개 영역으로 나뉩니다.
 
-**문제점**
-| 문제 | 내용 |
-|------|------|
-| 스타일 제어 불가 | 동화책 삽화 스타일로 유도가 어려움 |
-| 캐릭터 일관성 없음 | 장면마다 외형 달라짐 |
-| CLIP 토큰 한계 | CLIP-L 77토큰 → 상세 묘사 불가 |
-| negative_prompt 의존 | 원치 않는 요소를 negative로 제거해야 함 |
-| 한국 전래동화 고증 부족 | 시대·문화 배경 반영 어려움 |
+1. Kafka consumer가 INIT/PAGE 메시지를 수신
+2. processor가 메시지 종류에 따라 초기화 또는 페이지 생성 수행
+3. GPT-4o가 캐릭터 바이블과 페이지 장면 정보를 추출
+4. FLUX.2-klein-4B가 reference 이미지와 페이지 이미지를 생성
+5. S3 저장 후 Kafka result topic으로 완료 이벤트를 publish
 
-**결론**: 기본 SDXL로는 동화 삽화 스타일 제어 불가. 자체 LoRA 학습 필요.
+## 3. 상위 구조
 
----
+```text
+Spring / upstream service
+  -> Kafka topic: fairytale_created
+  -> Kafka topic: fairytale_paragraph
 
-### 🔴 2단계: SDXL + 자체 LoRA 학습 시도
+worker.py
+  -> api_klein.consumer.run_consumer_loop()
+  -> api_klein.processor.FairytaleProcessor.handle_message()
+     -> GPT-4o character/page analysis
+     -> FLUX.2-klein-4B image generation
+     -> S3 upload
+     -> Kafka result publish
 
-**구성**
-- 베이스 모델: SDXL 1.0 + FP16 VAE (`madebyollin/sdxl-vae-fp16-fix`)
-- trigger word: `ftbookstyle`
-- 데이터셋: `dataset/style_core` (resolution 768)
-- 학습 설정: rank=32, alpha=32, lr=8e-5, max_steps=140, batch=2
-
-**문제점**
-| 문제 | 내용 |
-|------|------|
-| 데이터 부족 | 학습 데이터 매우 적음 → 스타일 학습 실패 |
-| 140스텝으로 underfitting | 충분히 학습되지 않음 |
-| SDXL 자체 VRAM 높음 | 12GB에서 학습 자체가 빠듯 |
-| 품질 미달 | ftbookstyle trigger로 일관된 스타일 미생성 |
-
-**결론**: SDXL 학습 인프라 문제 + 데이터 부족. FLUX 계열로 전환.
-
----
-
-### 🟡 3단계: FLUX.1-schnell + QLoRA 자체 학습
-
-**구성**
-- 베이스 모델: `black-forest-labs/FLUX.1-schnell` (12B, T5-XXL 512토큰)
-- 양자화: NF4 (bitsandbytes) — transformer ~3GB
-- 학습: QLoRA rank=4, lr=1e-4, **500 steps**, batch=1
-- 데이터: **42장 동화 삽화** + 자연어 캡션
-- 체크포인트: 100, 200, 300, 400, 500 (100 step 간격)
-
-**이미지 생성 시간**
-| 설정 | 소요시간 (RTX 3060 12GB) |
-|------|--------------------------|
-| FLUX.1-schnell NF4, 4 steps | **약 30~45초/장** |
-
-*NF4 양자화 + 12B 파라미터 크기로 인해 SDXL보다 오히려 느림*
-
-**체크포인트 비교 결과**
-| 체크포인트 | 품질 |
-|-----------|------|
-| no_lora (baseline) | ✅ 가장 깨끗한 이미지 |
-| checkpoint-100 | 🟡 약간의 스타일 적용 |
-| checkpoint-200 | 🔴 이미지 붕괴 시작 (뭉개짐, 색상 번짐) |
-| checkpoint-300~500 | 🔴 완전 붕괴 |
-
-**문제점**
-| 문제 | 내용 |
-|------|------|
-| 과학습 (overfitting) | 42장 데이터 → checkpoint-200부터 이미지 붕괴 |
-| no_lora가 최고 성능 | LoRA를 쓰는 게 오히려 손해 |
-| 캐릭터 일관성 없음 | LoRA가 특정 캐릭터를 기억하지 못함 |
-| T5 512토큰 한계 | 상세한 시대 고증 묘사 불가 |
-| 느린 속도 | NF4 + 12B → 30~45초/장 |
-
-**결론**: LoRA 방향 포기. no_lora 상태에서 프롬프트 파이프라인으로 전환.
-
----
-
-### 🟡 4단계: FLUX.1-schnell (no_lora) + GPT-4o 파이프라인
-
-**구성**
-- 모델: FLUX.1-schnell NF4 그대로 (LoRA 미적용)
-- GPT-4o로 동화 전체를 1회 분석 → 캐릭터 + 장면 프롬프트 자동 생성
-- `api/` 폴더에 FastAPI 파이프라인 구축 (SSE 스트리밍)
-- 프롬프트 구조: T5 자연어 문장 (512토큰 한도)
-
-**이미지 생성 시간**: 30~45초/장 (동일)
-
-**개선된 점**
-- 동화 텍스트 → 자동 장면 분석 (GPT-4o)
-- 캐릭터 visual_hint 자동 추출
-- FastAPI SSE 스트리밍으로 실시간 진행 상황 전달
-
-**문제점**
-| 문제 | 내용 |
-|------|------|
-| 캐릭터 일관성 없음 | 장면마다 주인공 외형이 완전히 달라짐 |
-| 구도 고정 | 모든 장면이 비슷한 정면/와이드샷 반복 |
-| 동적 표현 부족 | 캐릭터 표정·행동이 정적, 단조로움 |
-| 시대 고증 실패 | 나무꾼이 현대 복장, 조선시대 배경인데 서양 건물 등 |
-| 하드코딩 한계 | 직업별 번역 규칙 추가해도 모든 케이스 커버 불가 |
-| T5 512토큰 | 상세 묘사 여전히 제한적 |
-
-**결론**: 캐릭터 일관성 문제는 프롬프트 엔지니어링으로 근본 해결 불가. 참조 이미지를 지원하는 모델로 교체 필요.
-
----
-
-### 🟢 5단계: FLUX.2-klein-4B — 현재 (`api_klein/`)
-
-**구성**
-- 베이스 모델: `black-forest-labs/FLUX.2-klein-4B` (4B 파라미터)
-- Transformer: `Photoroom/FLUX.2-klein-4b-fp8-diffusers` (bf16 버전, ~7.7GB)
-- 텍스트 인코더: Qwen3 (40,960 토큰 — T5 대비 80배)
-- 4 steps, guidance_scale=1.0, CPU offload
-- `api_klein/` 단일 파이프라인 (옛 `api/` FLUX.1-schnell 흐름은 제거됨)
-
-**이미지 생성 시간**
-| 설정 | 소요시간 (RTX 3060 12GB) |
-|------|--------------------------|
-| FLUX.2-klein-4B bf16, 4 steps | **약 10~15초/장** |
-| + 캐릭터 레퍼런스 생성 (1회) | +10~15초 (동화당 최초 1회만) |
-
-*FLUX.1-schnell 대비 2~3배 빠름, SDXL 수준 속도에 훨씬 높은 품질*
-
-**개선된 점**
-| 항목 | 개선 내용 |
-|------|----------|
-| 캐릭터 일관성 | 레퍼런스 이미지 1회 생성 → 전 장면 `image=[ref]` 주입 |
-| 속도 | 10~15초/장 (이전 30~45초 대비 2~3배 향상) |
-| 토큰 한도 | 40,960토큰 → 상세 시대 고증 묘사 가능 |
-| 시대 고증 자동화 | 요청의 테마(KOREAN_TRADITIONAL 등)를 기반으로 GPT-4o가 캐릭터별 세부 복식·소품·헤어 묘사 생성 (하드코딩 X) |
-| 동적 구도 | LLM이 매 장면 다른 카메라 앵글 지정 (close-up, wide shot, low angle 등) |
-| 표정 표현 | 만화적 과장 표현 룰 (눈이 커지기, 말풍선, 물음표 등) |
-
-**현재 미해결 과제**
-| 문제 | 원인 | 상태 |
-|------|------|------|
-| 레퍼런스 있을 때 — 장면 감정/포즈 고정 | `image=[ref]`가 외형과 포즈를 함께 복제 → 장면 프롬프트와 충돌 | 🔴 미해결 |
-| 레퍼런스 없을 때 — 캐릭터 외형 매 장면 변함 | 일관성 기준 이미지 없음 → 모델이 매번 다르게 생성 | 🔴 미해결 |
-| 한국 전통 복식 편향 (중국 한푸로 출력) | FLUX 학습 데이터가 중국 의상 비중 훨씬 높음 → 프롬프트로 근본 해결 불가 | 🔴 모델 한계 |
-| 동물 해부학 오류 (토끼 귀 등) | 프롬프트 묘사 강화로 일부 개선, 완전 해결은 어려움 | 🟡 부분 개선 |
-
----
-
-## 2. 현재 파이프라인 흐름
-
-```
-클라이언트
-    │  POST /generate
-    │  { story_text, protagonist_type, theme, seed }
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│  routes.py                                                  │
-│  1. JobStore.create() → Job 생성 (job_id, status=queued)    │
-│  2. asyncio.Queue 생성 (SSE 이벤트용)                       │
-│  3. KleinJobExecutor.submit(job_id, on_event)               │
-│     └─ max_queue=3 초과 시 → 503 반환                       │
-│  4. EventSourceResponse 반환 (SSE 스트리밍 연결 유지)        │
-└─────────────────────────────────────────────────────────────┘
-    │  (asyncio.Queue ↔ 백그라운드 스레드 브릿지)
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│  KleinJobExecutor (단일 워커 스레드 — GPU 독점)              │
-│                                                             │
-│  [1] 스토리 분석  (job.status = "analyzing")                │
-│      build_story_plan(story_text)                           │
-│      └─ GPT-4o (단일 경로 — 실패 시 예외 propagate)         │
-│          ├─ 캐릭터 시대 고증 visual_description 생성        │
-│          ├─ 매 장면 카메라 앵글 + 감정/행동 scene_prompt    │
-│          └─ theme 감지 (LLM 결과)                          │
-│                                                             │
-│      ※ LLM 감지 theme ≠ 요청 theme → 요청 theme 우선 적용  │
-│         (world/scene_plans 재빌드)                          │
-│                                                             │
-│      SSE emit → "analyzing" { total_pages }                 │
-│                                                             │
-│  [2] 캐릭터 레퍼런스 생성                                   │
-│      generator.generate_character_reference(char_prompt)    │
-│      └─ 저장: outputs/klein_jobs/{job_id}/page_00.png       │
-│      SSE emit → "character_reference" { image_url }         │
-│                                                             │
-│  [3] 페이지별 삽화 생성  (job.status = "generating")        │
-│      for scene in story_plan.scenes:                        │
-│        generator.generate(prompt, use_reference=True)       │
-│        └─ 저장: outputs/klein_jobs/{job_id}/page_NN.png     │
-│        SSE emit → "page_complete" { page_index, image_url } │
-│                                                             │
-│      SSE emit → "complete" { total_pages, total_elapsed }   │
-└─────────────────────────────────────────────────────────────┘
-
-클라이언트는 SSE로 실시간 수신:
-  analyzing          → { total_pages: 10 }
-  character_reference→ { image_url: "/images/{job_id}/page_00.png" }
-  page_complete      → { page_index: 1, image_url: "...", elapsed: 12.3 }
-  ...
-  complete           → { total_pages: 10, total_elapsed: 130.0 }
-
-GET /jobs/{job_id}   → Job 전체 상태 조회 (SSE 연결 끊긴 후 재조회용)
-GET /images/{job_id}/page_NN.png  → 생성된 이미지 정적 파일
+Result consumer
+  -> Kafka topic: fairytale_image
 ```
 
----
+## 4. 메시지 기반 처리 구조
 
-## 3. 디렉토리 구조
+### INIT 토픽
 
-```
-api_klein/                          ← Klein API 진입점 (단일 파이프라인)
-  app.py                            # FastAPI 앱 (포트 8001) + lifespan
-  schemas.py                        # Pydantic 요청/응답 모델
-  routes.py                         # POST /generate (SSE), GET /jobs/{id}
-  tasks.py                          # Job, JobStore, KleinJobExecutor
-  pipeline/
-    __init__.py
-    config.py                       # 출력/테마 설정
-    generator_klein.py              # FLUX.2-klein-4B 이미지 생성기
-    model_manager.py                # KleinModelManager 싱글톤
-    llm_prompt_extractor.py         # GPT-4o 스토리 분석 (시대 고증 자동화)
-    story_pipeline.py               # 분석 결과 → Klein 자연어 프롬프트 조립
+기본 토픽명은 `fairytale_created` 입니다.
 
-test_pipeline_klein.py              # CLI 통합 테스트 (Story A/B, --no-ref 옵션)
-outputs/
-  test_klein/
-    story_a_with_ref/               # 레퍼런스 있음 결과
-    story_a_no_ref/                 # 레퍼런스 없음 결과 (--no-ref)
-    story_b_with_ref/
-    story_b_no_ref/
-      reference/                    # 캐릭터 레퍼런스 이미지
-  klein_jobs/                       # API 서버 생성 이미지
-```
+역할:
 
----
+- 동화 단위 초기화
+- 캐릭터 바이블 생성
+- 역할별 reference 이미지 생성
+- 이후 PAGE 생성에 필요한 공통 자원 준비
 
-## 4. API 엔드포인트
-
-### `POST /generate` — SSE 스트리밍 삽화 생성
-
-```
-Request (JSON):
-  story_text: str          # \n으로 구분된 동화 전문
-  protagonist_type: str    # "human" | "animal" | "other"
-  theme: str               # 8종 테마 키
-  seed: int | None
-
-Response: SSE (text/event-stream)
-  event: analyzing           → {"total_pages": 10}
-  event: character_reference → {"image_url": "/images/{job_id}/page_00.png"}
-  event: page_complete       → {"page_index": 1, "image_url": "...", "elapsed": 12.3}
-  ...
-  event: complete            → {"total_pages": 10, "total_elapsed": 130.0}
-  event: error               → {"message": "...", "page_index": 3}
-```
-
-### `GET /jobs/{job_id}` — Job 상태 조회
+예시 payload:
 
 ```json
 {
-  "job_id": "...",
-  "status": "completed",
-  "total_pages": 10,
-  "character_reference_url": "/images/{job_id}/page_00.png",
-  "pages": [
-    {"page_index": 1, "source_text": "...", "image_url": "...", "elapsed": 12.3}
-  ],
-  "total_elapsed": 130.0
+  "fairytaleId": 17,
+  "setting": "KOREAN_TRADITIONAL",
+  "character_type": "HUMAN",
+  "characters": {
+    "HERO": "나무꾼",
+    "HELPER": "선녀",
+    "VILLAIN": "호랑이"
+  }
 }
 ```
 
----
+### PAGE 토픽
 
-## 5. 핵심 설계 결정
+기본 토픽명은 `fairytale_paragraph` 입니다.
 
-### GPT-4o 기반 캐릭터 시대 고증 자동화 (하드코딩 제거)
+역할:
 
-요청에는 이미 `theme` (KOREAN_TRADITIONAL 등)이 포함되어 있다.
-GPT-4o의 역할은 테마를 감지하는 게 아니라, 그 테마 안에서 **캐릭터별 세부 외형을 정확하게 묘사**하는 것.
+- 페이지 단위 삽화 생성
+- 장면 분석
+- 등장 캐릭터 reference 주입
+- 결과 이미지 저장과 완료 이벤트 publish
 
-**기존 방식 (문제)**
-```python
-# ❌ 나무꾼만 하드코딩 → 등장인물이 바뀌면 적용 안 됨
-"나무꾼 → wearing rough beige hemp jeogori..."
-"선녀 → flowing white Korean cheonui..."
+예시 payload:
+
+```json
+{
+  "fairytaleId": 17,
+  "pageNo": 1,
+  "sentences": "나무꾼이 산길을 걸어갔어요.\n멀리서 신비한 빛이 보였어요."
+}
 ```
 
-**현재 방식 (해결)**
-```
-GPT-4o에게: "요청 테마(KOREAN_TRADITIONAL)를 기반으로,
-            이 캐릭터가 실제 그 시대/문화에서 어떤 복식·외형을 가졌는지
-            네 지식으로 직접 묘사하라."
-```
-- 어떤 직업/캐릭터가 나와도 GPT-4o가 시대 고증된 묘사 생성
-- 조선시대면 한복, 중세 유럽이면 tunic/chainmail, 판타지면 판타지 의상
+### RESULT 토픽
 
-### 캐릭터 일관성 (레퍼런스 방식)
+기본 토픽명은 `fairytale_image` 입니다.
 
-```
-1회: generate_character_reference(visual_hint)
-     → self._character_reference 이미지 저장
+예시 payload:
 
-이후 모든 장면: generate(prompt, image=[self._character_reference])
-     → 모델이 레퍼런스 이미지의 캐릭터 외형을 유지하며 다른 배경/포즈 생성
+```json
+{
+  "fairytaleId": 17,
+  "pageNo": 1,
+  "imageurl": "https://.../fairytales/17/pages/page_01.png"
+}
 ```
 
-**알려진 트레이드오프**
-| 모드 | 장점 | 단점 |
-|------|------|------|
-| `--no-ref` (레퍼런스 없음) | 장면 감정·포즈 자유롭게 표현 | 매 장면 캐릭터 외형이 달라짐 |
-| 기본 (레퍼런스 있음) | 캐릭터 외형 일관성 유지 | `image=[ref]`가 포즈까지 복제 → 표정·구도 제한 |
+## 5. 처리 흐름
 
-→ 현재로서는 스토리 표현력과 캐릭터 일관성을 동시에 완전히 해결하는 방법 없음.
+### 5.1 INIT 처리
 
-### LLM 장면 프롬프트 우선 사용
+INIT 메시지를 받으면 `FairytaleProcessor._ensure_initialized()`가 실행됩니다.
 
-프롬프트 빌더는 **구조만 잡고**, 실제 내용(구도, 감정, 행동)은 GPT-4o 결과를 그대로 사용:
+흐름:
+
+1. `fairytaleId`, `setting`, `character_type`, `characters` 파싱
+2. S3에 기존 `bible.json`과 reference 이미지가 있는지 확인
+3. 이미 있으면 재생성하지 않고 캐시에 적재
+4. 없으면 GPT-4o로 역할별 `visual_description` 생성
+5. `bible.json`을 S3에 업로드
+6. 각 역할에 대해 reference 이미지를 생성하고 S3에 업로드
+7. 메모리 캐시에 `bible`과 reference 이미지를 저장
+
+INIT는 결과 토픽으로 별도 publish 하지 않습니다.  
+이 단계는 PAGE 생성 준비 단계입니다.
+
+### 5.2 PAGE 처리
+
+PAGE 메시지를 받으면 `FairytaleProcessor._process_page()`가 실행됩니다.
+
+흐름:
+
+1. `fairytaleId`, `pageNo`, `sentences` 파싱
+2. 이미 해당 페이지가 S3에 있으면 생성 생략
+3. 기존 결과 URL을 result topic에 다시 publish
+4. `bible.json` 로드
+5. GPT-4o로 현재 페이지의 `focus_roles`와 `narrative_hint` 추출
+6. 현재 페이지에 실제로 등장하는 역할의 reference 이미지만 로드
+7. 최종 프롬프트 조합
+8. FLUX.2-klein-4B로 1024x1024 이미지 생성
+9. S3에 업로드
+10. 결과 Kafka topic으로 완료 메시지 publish
+
+## 6. GPT-4o의 역할
+
+GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 구조화된 해석을 담당합니다.
+
+### 6.1 캐릭터 바이블 생성
+
+`extract_character_bible()`의 역할:
+
+- 역할별 캐릭터 타입 추론
+- 문화권/시대에 맞는 복식 묘사 생성
+- 감정 표현이 아닌 중립적 외형 설명 생성
+- reference 이미지 생성용 `visual_description` 작성
+
+출력 예시는 아래와 같은 형태입니다.
+
+```json
+{
+  "HERO": {
+    "name": "나무꾼",
+    "type": "HUMAN",
+    "visual_description": "..."
+  },
+  "HELPER": {
+    "name": "선녀",
+    "type": "OTHER",
+    "visual_description": "..."
+  }
+}
 ```
-[스타일]  Korean children's book illustration, soft cell shading...
-[캐릭터]  {LLM visual_hint — 시대 고증 포함}
-[장면]    Scene: {LLM scene_prompt — 카메라 앵글 + 감정 + 행동}
-[배경]    Setting: {테마 기반 배경 힌트}
+
+### 6.2 페이지 장면 분석
+
+`extract_page_scene()`의 역할:
+
+- 현재 페이지에 실제로 보일 역할만 선택
+- 카메라 앵글, 동작, 감정, 환경이 포함된 `narrative_hint` 생성
+- 프롬프트에 불필요한 군중/추가 캐릭터가 생기지 않도록 통제
+
+출력 예시:
+
+```json
+{
+  "narrative_hint": "Wide shot of the woodcutter walking along a mountain path, looking startled as a mysterious glow appears ahead in the forest.",
+  "focus_roles": ["HERO"]
+}
 ```
 
----
+## 7. FLUX.2-klein-4B 사용 방식
 
-## 6. 모델 스펙
+### 7.1 선택 이유
 
-| 항목 | 값 |
-|------|-----|
-| 파라미터 | 4B |
-| 텍스트 인코더 | Qwen3 (40,960 토큰) |
-| 추론 스텝 | 4 (distilled) |
-| guidance_scale | 1.0 |
-| 참조 이미지 | 멀티 레퍼런스 지원 |
-| Transformer 크기 (bf16) | ~7.7GB |
-| Transformer 크기 (FP8) | ~3.9GB |
-| 필요 VRAM (bf16 + CPU offload) | 8~10GB |
-| 생성 속도 | 약 10~15초/장 |
-| 라이선스 | Apache 2.0 |
+이전 실험에서는 SDXL, SDXL LoRA, FLUX.1-schnell 기반 구성이 있었지만, 현재는 `FLUX.2-klein-4B`가 가장 현실적인 균형을 제공한다고 판단했습니다.
 
-| 가중치 | 출처 |
-|--------|------|
-| Transformer (bf16/FP8) | `Photoroom/FLUX.2-klein-4b-fp8-diffusers` |
-| T5 / VAE / CLIP | `black-forest-labs/FLUX.2-klein-4B` |
+주요 이유:
 
----
+- Qwen3 텍스트 인코더 기반의 긴 자연어 프롬프트 처리
+- 4 step 설정에서도 빠른 생성 속도
+- reference image 입력을 통한 캐릭터 일관성 보강
+- RTX 3060 12GB 환경에서 CPU offload와 함께 운용 가능
 
-## 7. 실행
+### 7.2 생성 설정
+
+- base model: `black-forest-labs/FLUX.2-klein-4B`
+- transformer: `Photoroom/FLUX.2-klein-4b-fp8-diffusers`
+- output size: `1024x1024`
+- inference steps: `4`
+- guidance scale: `1.0`
+- dtype: BF16
+- optimization: CPU offload
+- optional optimization: `torchao` FP8 weight-only quantization
+
+### 7.3 reference 이미지 전략
+
+캐릭터 일관성 유지를 위해 동화 단위로 역할별 reference 이미지를 먼저 생성합니다.
+
+전략:
+
+1. INIT 단계에서 역할별 reference 이미지 생성
+2. PAGE 단계에서 현재 장면에 필요한 역할만 골라 multi-image로 입력
+3. 외형은 유지하고, 장면 설명은 페이지 프롬프트로 제어
+
+장점:
+
+- 페이지 간 외형 일관성 향상
+- 역할이 여러 개인 장면에서도 필요한 reference만 선택 가능
+
+한계:
+
+- reference가 강하게 작동하면 포즈와 표정 자유도가 줄어듦
+- reference를 쓰지 않으면 감정 표현은 자유롭지만 외형이 흔들릴 수 있음
+
+## 8. 저장 구조
+
+S3에는 동화 단위로 아래 구조를 사용합니다.
+
+```text
+fairytales/{fairytaleId}/
+  bible.json
+  references/
+    HERO.png
+    VILLAIN.png
+    HELPER.png
+    DISPATCHER.png
+    FALSE_HERO.png
+    DONOR.png
+  pages/
+    page_01.png
+    page_02.png
+```
+
+의도:
+
+- `bible.json`은 동화 전체의 공통 메타데이터
+- `references/`는 역할별 재사용 자산
+- `pages/`는 최종 결과물
+
+## 9. 캐시 전략
+
+`FairytaleProcessor`는 메모리 내 캐시를 사용합니다.
+
+- `_bible_cache`: `fairytale_id -> bible payload`
+- `_ref_cache`: `fairytale_id -> { role -> PIL.Image }`
+
+의도:
+
+- 같은 동화의 여러 페이지 처리 시 S3 재다운로드 최소화
+- 한 워커 프로세스 내 반복 처리 비용 감소
+
+현재는 간단한 dict 기반 캐시이며 LRU나 TTL은 적용하지 않았습니다.
+
+## 10. 장애 처리와 멱등성
+
+### 10.1 수동 commit
+
+consumer는 `enable_auto_commit=False`로 동작합니다.  
+메시지 처리가 성공했을 때만 commit 합니다.
+
+### 10.2 PAGE가 INIT보다 먼저 오는 경우
+
+이 경우 `BibleNotReadyError`를 발생시켜 commit을 보류하고 재시도합니다.
+
+동작:
+
+- 최대 재시도 횟수: `MAX_RETRIES = 5`
+- 대기 시간: `BIBLE_WAIT_SECONDS = 5`
+- 재시도 시 같은 offset으로 `seek`
+
+### 10.3 일반 예외 재시도
+
+모델 생성, S3, Kafka publish 등에서 일반 예외가 발생하면 exponential backoff로 재시도합니다.
+
+동작:
+
+- 재시도 횟수 추적: `(partition, offset)` 기준
+- backoff: `2 ** retry_count`
+- 최대 횟수 초과 시 commit 후 메시지 스킵
+
+현재는 DLQ는 구현되어 있지 않고, 로그 후 스킵하는 형태입니다.
+
+### 10.4 멱등 처리
+
+PAGE 처리 전에 `storage.page_exists(fairytale_id, page_no)`를 확인합니다.
+
+이미 생성된 페이지가 있으면:
+
+- 이미지 재생성 생략
+- 기존 URL을 결과 토픽으로 다시 publish
+
+이 방식으로 중복 메시지나 재시도 상황에서 생성 비용을 줄입니다.
+
+## 11. 주요 모듈 역할
+
+```text
+worker.py
+  워커 시작점. 환경 변수 확인, 모델 로드, publisher 시작, consumer 루프 실행.
+
+api_klein/consumer.py
+  Kafka consumer 구성, topic subscribe, 수동 commit, 재시도 제어.
+
+api_klein/processor.py
+  INIT/PAGE 메시지 분기, 캐릭터 바이블 생성, 페이지 생성, 캐시 관리.
+
+api_klein/publisher.py
+  Kafka 결과 토픽 publish 전담. 내부적으로 background event loop에서 producer 운용.
+
+api_klein/storage.py
+  S3 업로드/다운로드, object 존재 확인, public URL / s3 URL 생성.
+
+api_klein/pipeline/llm_prompt_extractor.py
+  GPT-4o 기반 캐릭터 바이블 생성과 페이지 장면 추출.
+
+api_klein/pipeline/generator_klein.py
+  FLUX.2-klein-4B 파이프라인 로드 및 reference/page 이미지 생성.
+
+api_klein/pipeline/model_manager.py
+  단일 프로세스에서 모델을 공유하는 싱글턴 로더.
+
+api_klein/pipeline/story_pipeline.py
+  테마 힌트, 프롬프트 조합, 보조 텍스트 정리 로직 제공.
+```
+
+## 12. 현재 트레이드오프
+
+### 장점
+
+- 구조가 단순하고 운영 흐름이 명확함
+- INIT와 PAGE를 분리해 캐릭터 설정 재사용 가능
+- S3와 Kafka를 중심으로 외부 시스템과 느슨하게 연결됨
+- 긴 자연어 프롬프트를 적극 활용할 수 있음
+
+### 한계
+
+- reference 이미지가 강할수록 장면 연출 자유도가 줄어듦
+- 단일 워커 기준이라 처리량 확장 전략이 아직 단순함
+- DLQ, 모니터링, 메트릭, job 추적 레이어가 아직 약함
+- 문화권 표현 편향은 프롬프트만으로 완전히 해결되지 않음
+
+## 13. 향후 개선 후보
+
+- DLQ 토픽 추가
+- 워커 다중화와 partition 전략 정교화
+- presigned URL 기반 비공개 S3 배포
+- 캐시 eviction 정책 도입
+- 페이지 생성 결과 품질 검수 단계 추가
+- reference 강도를 제어할 수 있는 generation 옵션 실험
+
+## 14. 실행
 
 ```bash
-# API 서버 (포트 8001)
-uvicorn api_klein.app:app --host 0.0.0.0 --port 8001
-
-# CLI 통합 테스트
-python test_pipeline_klein.py --story-a           # 한국 전통: 토끼+나무꾼+선녀 (레퍼런스 있음)
-python test_pipeline_klein.py --story-a --no-ref  # 레퍼런스 없이 생성 (표정 자유, 일관성 낮음)
-python test_pipeline_klein.py --story-b           # 유럽 중세: 릴리아+요정
-python test_pipeline_klein.py --seed 42 --output outputs/custom_dir
+pip install -r requirements.txt
+python worker.py
 ```
 
----
+필수 환경 변수:
 
-## 8. 테마 시스템 (8종)
+- `OPENAI_API_KEY`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `S3_BUCKET`
+- `KAFKA_BOOTSTRAP_SERVERS`
 
-| 테마 키 | 배경 힌트 |
-|---------|----------|
-| `KOREAN_TRADITIONAL` | Korean hanok, curved tiled roof, dancheong eaves |
-| `FOREST_NATURE` | lush green forest, tall trees, dappled sunlight |
-| `FANTASY_WORLD` | magical landscape, enchanted forest, glowing particles |
-| `EUROPEAN_MEDIEVAL` | cobblestone street, half-timbered houses, stone castle |
-| `UNDERWATER` | colorful coral reef, bubbles, light rays through water |
-| `SKY_HEAVEN` | celestial sky, fluffy clouds, golden sunlight |
-| `MODERN_FANTASY` | modern city with magical elements, glowing lights |
-| `MIXED` | colorful storybook background, warm lighting |
+주요 선택 환경 변수:
+
+- `AWS_REGION`
+- `KAFKA_TOPIC_INIT`
+- `KAFKA_TOPIC_PAGE`
+- `KAFKA_TOPIC_RESULT`
+- `KAFKA_GROUP_ID`
+- `KAFKA_SECURITY_PROTOCOL`
+- `KAFKA_SASL_MECHANISM`
+- `KAFKA_SASL_USERNAME`
+- `KAFKA_SASL_PASSWORD`
+
+## 15. 모델 변경 히스토리
+
+프로젝트는 초기부터 현재 구조까지 여러 모델과 방식을 거치며 개선되었습니다.
+
+### 15.1 SDXL 기반 초기 시도
+
+초기에는 SDXL 계열 모델을 사용해 동화 삽화를 생성했습니다.
+
+한계:
+
+- 동화책 특유의 일러스트 스타일이 약했음
+- 장면마다 캐릭터 외형이 달라졌음
+- 프롬프트 길이와 표현력이 제한적이었음
+- 생성 속도 대비 품질 만족도가 높지 않았음
+
+### 15.2 SDXL + LoRA 학습 시도
+
+이후 동화풍 스타일 보정을 위해 SDXL 기반 LoRA 학습을 시도했습니다.
+
+한계:
+
+- 학습 데이터 규모가 작아 충분한 일반화가 어려웠음
+- 12GB VRAM 환경에서 학습 효율이 낮았음
+- 원하는 수준의 스타일 고정 효과가 크지 않았음
+
+### 15.3 FLUX.1-schnell + QLoRA 시도
+
+그다음 단계에서는 FLUX.1-schnell과 QLoRA 기반 실험을 진행했습니다.
+
+개선점:
+
+- SDXL보다 자연어 프롬프트 반영력이 좋아졌음
+- 장면 묘사 자체는 더 유연해졌음
+
+한계:
+
+- 생성 속도가 느렸음
+- 소규모 데이터에서 overfitting이 발생했음
+- LoRA를 붙였을 때 오히려 결과가 불안정해지는 구간이 있었음
+- 캐릭터 일관성 문제는 여전히 충분히 해결되지 않았음
+
+### 15.4 GPT-4o 기반 프롬프트 파이프라인 도입
+
+이후에는 모델 자체를 계속 미세조정하기보다, GPT-4o를 이용해 캐릭터와 장면 정보를 구조화하는 방향으로 전환했습니다.
+
+개선점:
+
+- 캐릭터 설명을 더 정교하게 만들 수 있었음
+- 장면별 감정, 동작, 카메라 앵글을 프롬프트에 반영할 수 있었음
+- 문화권과 시대를 고려한 묘사 보정이 가능해졌음
+
+한계:
+
+- 프롬프트만으로 캐릭터 외형 일관성을 완전히 고정하기는 어려웠음
+
+### 15.5 FLUX.2-klein-4B + reference 이미지 방식
+
+현재는 `FLUX.2-klein-4B`와 GPT-4o 분석, 역할별 reference 이미지 방식을 결합한 구조를 사용하고 있습니다.
+
+개선점:
+
+- 생성 속도가 이전 FLUX.1-schnell 대비 개선됨
+- 긴 자연어 프롬프트 활용이 쉬워짐
+- reference 이미지로 캐릭터 일관성이 향상됨
+- GPT-4o와 결합해 장면별 연출 제어력이 높아짐
+
+남은 한계:
+
+- reference를 강하게 쓰면 포즈와 표정 변화가 제한됨
+- 문화권 표현 왜곡 가능성이 완전히 사라지지는 않음
+- 다중 캐릭터 장면 혼합 문제는 일부 남아 있음
+
+## 16. 성능 및 품질 개선 요약
+
+모델과 구조를 변경하면서 다음과 같은 개선이 있었습니다.
+
+### 속도 측면
+
+- SDXL 기반 대비 현재 구조가 더 안정적인 속도로 동작
+- FLUX.1-schnell 대비 FLUX.2-klein-4B에서 생성 시간이 단축됨
+- CPU offload와 FP8 시도로 제한된 VRAM 환경 대응력이 좋아짐
+
+### 품질 측면
+
+- 단순 프롬프트 입력 방식보다 GPT-4o 기반 장면 분석으로 스토리 반영력이 향상됨
+- 역할별 reference 이미지 도입으로 캐릭터 일관성이 개선됨
+- 문화권과 시대를 고려한 프롬프트 보정으로 배경 및 복식 품질이 향상됨
+
+### 운영 구조 측면
+
+- 단순 단일 생성 스크립트에서 Kafka 기반 비동기 워커 구조로 발전
+- INIT와 PAGE를 분리해 공통 자산을 재사용할 수 있게 됨
+- S3 저장과 Kafka 결과 전송을 통해 외부 시스템 연동이 쉬워짐
