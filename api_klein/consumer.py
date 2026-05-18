@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable
 from aiokafka import AIOKafkaConsumer, TopicPartition
 
 from api_klein.processor import BibleNotReadyError
+from api_klein.publisher import KafkaResultPublisher
 
 
 MAX_RETRIES = 5  # PAGE 가 INIT 보다 먼저 도착 시 INIT 처리 끝날 때까지 충분히 대기
@@ -80,11 +81,18 @@ def _build_consumer() -> tuple[AIOKafkaConsumer, list[str]]:
     return AIOKafkaConsumer(*topics, **kwargs), topics
 
 
-async def run_consumer_loop(handle_message: HandlerType) -> None:
+async def run_consumer_loop(
+    handle_message: HandlerType,
+    publisher: KafkaResultPublisher,
+) -> None:
     """카프카에서 메시지를 끌어와 handle_message(topic, payload) 콜백에 전달.
 
     handle_message 가 동기 함수면 asyncio.to_thread 로 별도 스레드에서 실행
     (모델 추론이 GIL 을 잡고 이벤트 루프 막지 않게 — 카프카 heartbeat 유지).
+
+    publisher 는 결과 토픽 + DLQ 토픽 publish 에 공통으로 사용.
+    실패한 메시지(파싱 실패, max_retries 초과, bible_not_ready 한계 도달)는
+    DLQ 토픽으로 격리한 뒤 commit — 유실 방지.
     """
     consumer, topics = _build_consumer()
     await consumer.start()
@@ -101,11 +109,21 @@ async def run_consumer_loop(handle_message: HandlerType) -> None:
         async for msg in consumer:
             key = (msg.partition, msg.offset)
 
-            # 1) 파싱 — 깨진 JSON 은 poison message, 즉시 흘려보냄
+            # 1) 파싱 — 깨진 JSON 은 poison message, DLQ 격리 후 commit
             try:
                 payload = json.loads(msg.value.decode("utf-8"))
             except Exception as exc:
                 print(f"[consumer] 파싱 실패 partition={msg.partition} offset={msg.offset}: {exc}")
+                publisher.publish_dlq(
+                    original_topic=msg.topic,
+                    original_partition=msg.partition,
+                    original_offset=msg.offset,
+                    original_key=msg.key,
+                    original_payload_bytes=msg.value,
+                    failure_reason="poison_message",
+                    last_error=repr(exc),
+                    retry_count=0,
+                )
                 await consumer.commit()
                 retry_counts.pop(key, None)
                 continue
@@ -141,8 +159,18 @@ async def run_consumer_loop(handle_message: HandlerType) -> None:
                     f"({count}/{MAX_RETRIES})"
                 )
                 if count >= MAX_RETRIES:
-                    # INIT 가 영원히 안 올 가능성 — 메시지 유실 방지하려면 DLQ 추가
-                    print(f"[consumer] 재시도 한계 도달 — 메시지 흘려보냄 (offset={msg.offset})")
+                    # INIT 가 영원히 안 올 가능성 — DLQ 로 격리 후 commit
+                    print(f"[consumer] 재시도 한계 도달 — DLQ 격리 (offset={msg.offset})")
+                    publisher.publish_dlq(
+                        original_topic=msg.topic,
+                        original_partition=msg.partition,
+                        original_offset=msg.offset,
+                        original_key=msg.key,
+                        original_payload_bytes=msg.value,
+                        failure_reason="bible_not_ready",
+                        last_error=repr(exc),
+                        retry_count=count,
+                    )
                     await consumer.commit()
                     retry_counts.pop(key, None)
                 else:
@@ -159,7 +187,17 @@ async def run_consumer_loop(handle_message: HandlerType) -> None:
                     f"partition={msg.partition} offset={msg.offset}: {exc!r}"
                 )
                 if count >= MAX_RETRIES:
-                    print(f"[consumer] 재시도 한계 도달 — 메시지 흘려보냄 (offset={msg.offset})")
+                    print(f"[consumer] 재시도 한계 도달 — DLQ 격리 (offset={msg.offset})")
+                    publisher.publish_dlq(
+                        original_topic=msg.topic,
+                        original_partition=msg.partition,
+                        original_offset=msg.offset,
+                        original_key=msg.key,
+                        original_payload_bytes=msg.value,
+                        failure_reason="max_retries_exceeded",
+                        last_error=repr(exc),
+                        retry_count=count,
+                    )
                     await consumer.commit()
                     retry_counts.pop(key, None)
                 else:

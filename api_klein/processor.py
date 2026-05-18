@@ -141,7 +141,7 @@ class FairytaleProcessor:
                 fairytale_id=fairytale_id,
                 setting=str(_pick(message, "setting", default="FOREST_NATURE")),
                 character_type=str(
-                    _pick(message, "character_type", "characterType", default="OTHER")
+                    _pick(message, "character_type", "characterType", default="ETC")
                 ).upper(),
                 characters=dict(characters),
             )
@@ -341,7 +341,7 @@ class FairytaleProcessor:
         for i, role in enumerate(focus_roles):
             entry = visual_descriptions.get(role, {}) or {}
             desc = (entry.get("visual_description") or "").strip()
-            ctype = (entry.get("type") or "OTHER").upper()
+            ctype = (entry.get("type") or "ETC").upper()
             if not desc:
                 desc = f"a {role.lower()} character"
 

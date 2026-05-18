@@ -84,7 +84,7 @@ async def _main() -> None:
             loop.add_signal_handler(sig, _on_signal)
     # Windows는 KeyboardInterrupt를 별도 처리
 
-    consumer_task = asyncio.create_task(run_consumer_loop(processor.handle_message))
+    consumer_task = asyncio.create_task(run_consumer_loop(processor.handle_message, publisher))
     stop_task = asyncio.create_task(stop_event.wait())
 
     try:

@@ -167,7 +167,7 @@ GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 �
   },
   "HELPER": {
     "name": "선녀",
-    "type": "OTHER",
+    "type": "ETC",
     "visual_description": "..."
   }
 }

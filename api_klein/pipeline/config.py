@@ -60,35 +60,3 @@ THEME_EXPANSIONS = {
     },
 }
 
-THEME_CHARACTER_COSTUME_HINTS = {
-    "KOREAN_TRADITIONAL": {
-        "human": "vibrant colorful hanbok, jeogori ribbon bow",
-        "animal": "small colorful hanbok, ribbon bow tie",
-        "other": "Korean traditional ornamental details",
-    },
-    "EUROPEAN_MEDIEVAL": {
-        "human": "medieval tunic and cloak, leather belt",
-        "animal": "small medieval cape, storybook costume",
-        "other": "European medieval decorative details",
-    },
-    "FANTASY_WORLD": {
-        "human": "colorful fantasy adventurer outfit",
-        "animal": "small fantasy outfit, magical accessory",
-        "other": "magical glowing details",
-    },
-    "FOREST_NATURE": {
-        "human": "simple folk costume, earth tones",
-        "animal": "",
-        "other": "natural leaf and flower decorations",
-    },
-    "UNDERWATER": {
-        "human": "ocean-colored garment, seashell accessories",
-        "animal": "",
-        "other": "coral and seashell decorations",
-    },
-    "SKY_HEAVEN": {
-        "human": "flowing white celestial robe",
-        "animal": "small cloud-white outfit",
-        "other": "cloud and star decorations",
-    },
-}

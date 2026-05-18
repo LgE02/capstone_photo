@@ -18,9 +18,11 @@ asyncio.to_thread 안에서 호출하므로 내부적으로 별도 이벤트 루
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from aiokafka import AIOKafkaProducer
@@ -47,6 +49,7 @@ class KafkaResultPublisher:
     ):
         self.bootstrap = bootstrap or _env("KAFKA_BOOTSTRAP_SERVERS")
         self.topic = topic or _env("KAFKA_TOPIC_RESULT", "fairytale_image")
+        self.dlq_topic = _env("KAFKA_TOPIC_DLQ", "fairytale_dlq")
         self.security_protocol = (security_protocol or _env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")).upper()
 
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -143,6 +146,69 @@ class KafkaResultPublisher:
         )
         fut.result(timeout=15)
         print(f"[publisher] → {self.topic} fairytaleId={fairytale_id} pageNo={page_no}")
+
+    # ── DLQ publish ────────────────────────────────────────────────────────
+
+    def publish_dlq(
+        self,
+        *,
+        original_topic: str,
+        original_partition: int,
+        original_offset: int,
+        original_key: bytes | None,
+        original_payload_bytes: bytes | None,
+        failure_reason: str,
+        last_error: str,
+        retry_count: int,
+    ) -> None:
+        """실패 메시지를 DLQ 토픽으로 격리.
+
+        DLQ 전송 자체가 실패해도 메인 컨슈머 루프를 죽이지 않도록 예외 흡수.
+        원본 payload 는 best-effort 로 JSON 파싱, 실패 시 base64 로 보존.
+        """
+        if not self._started or self._loop is None or self._producer is None:
+            print("[publisher] DLQ publish skip — publisher 가 시작되지 않음")
+            return
+
+        if original_payload_bytes is None:
+            original_payload: Any = None
+        else:
+            try:
+                original_payload = json.loads(original_payload_bytes.decode("utf-8"))
+            except Exception:
+                original_payload = {
+                    "_encoding": "base64",
+                    "_value": base64.b64encode(original_payload_bytes).decode("ascii"),
+                }
+
+        dlq_payload = {
+            "originalTopic": original_topic,
+            "originalPartition": original_partition,
+            "originalOffset": original_offset,
+            "originalKey": original_key.decode("utf-8", errors="replace") if original_key else None,
+            "originalPayload": original_payload,
+            "failureReason": failure_reason,
+            "lastError": last_error,
+            "retryCount": retry_count,
+            "failedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        body = json.dumps(dlq_payload, ensure_ascii=False).encode("utf-8")
+        # key 는 원본 fairytaleId 가 있으면 그대로 — 같은 동화 실패가 같은 partition 으로 모이게.
+        dlq_key = original_key if original_key else None
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._producer.send_and_wait(self.dlq_topic, body, key=dlq_key),
+                self._loop,
+            )
+            fut.result(timeout=15)
+            print(
+                f"[publisher] → DLQ {self.dlq_topic} reason={failure_reason} "
+                f"orig_topic={original_topic} offset={original_offset}"
+            )
+        except Exception as exc:
+            # DLQ 실패가 컨슈머를 죽이면 안 됨 — 로그만 남기고 진행.
+            print(f"[publisher] ⚠ DLQ publish 실패 (무시): {exc!r}")
 
     # ── 헬스 체크 ──────────────────────────────────────────────────────────
 
