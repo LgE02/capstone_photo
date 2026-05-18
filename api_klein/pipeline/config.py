@@ -1,4 +1,4 @@
-"""Klein 파이프라인 공통 설정."""
+"""배경 테마에 따른 프롬프트 확장 설정을 포함하는 모듈"""
 
 from pathlib import Path
 
