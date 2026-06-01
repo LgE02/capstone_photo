@@ -63,7 +63,7 @@ Result consumer
 {
   "fairytaleId": 17,
   "setting": "KOREAN_TRADITIONAL",
-  "character_type": "HUMAN",
+  "char_species": "HUMAN",
   "characters": {
     "HERO": "나무꾼",
     "HELPER": "선녀",
@@ -115,7 +115,7 @@ INIT 메시지를 받으면 `FairytaleProcessor._ensure_initialized()`가 실행
 
 흐름:
 
-1. `fairytaleId`, `setting`, `character_type`, `characters` 파싱
+1. `fairytaleId`, `setting`, `char_species`, `characters` 파싱
 2. S3에 기존 `bible.json`과 reference 이미지가 있는지 확인
 3. 이미 있으면 재생성하지 않고 캐시에 적재
 4. 없으면 GPT-4o로 역할별 `visual_description` 생성
@@ -155,6 +155,8 @@ GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 �
 - 문화권/시대에 맞는 복식 묘사 생성
 - 감정 표현이 아닌 중립적 외형 설명 생성
 - reference 이미지 생성용 `visual_description` 작성
+- 종별 anatomy 가드(BIRD/REPTILE/AMPHIBIAN/MAMMAL) 적용 — 새에 "귀 뒤" 같은 포유류 표현이 들어가지 않도록 단어 선택을 제약
+- VILLAIN 톤 가이드 — 호러로 빠지지 않는 범위 내에서 어둡고 위압감 있는 묘사
 
 출력 예시는 아래와 같은 형태입니다.
 
@@ -177,8 +179,11 @@ GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 �
 
 `extract_page_scene()`의 역할:
 
-- 현재 페이지에 실제로 보일 역할만 선택
-- 카메라 앵글, 동작, 감정, 환경이 포함된 `narrative_hint` 생성
+- 현재 페이지(1~3문장 가변)에서 실제로 보일 역할만 선택
+- 가장 시각적으로 강한 한 순간을 골라 `narrative_hint`(영어 단일 문장)로 압축
+- 동작, 감정, 환경, 감정 심볼('!', '?', ❤ 등)을 한 문장에 포함
+- 이전 페이지 분석 결과(`previous_scenes`)를 받아 공간/상황 연속성 유지
+- 인접 페이지 간 같은 시각 비트가 반복되지 않도록 통제
 - 프롬프트에 불필요한 군중/추가 캐릭터가 생기지 않도록 통제
 
 출력 예시:
@@ -265,13 +270,16 @@ fairytales/{fairytaleId}/
 
 - `_bible_cache`: `fairytale_id -> bible payload`
 - `_ref_cache`: `fairytale_id -> { role -> PIL.Image }`
+- `_scene_history`: `fairytale_id -> [ { page_no, sentences, narrative_hint, focus_roles } ]`
+  — 페이지 N 처리 시 1..N-1의 분석 결과를 GPT-4o에 함께 전달해 공간/상황 연속성과 장면 중복 회피에 사용
 
 의도:
 
 - 같은 동화의 여러 페이지 처리 시 S3 재다운로드 최소화
 - 한 워커 프로세스 내 반복 처리 비용 감소
+- 페이지 간 시각적 일관성 향상
 
-현재는 간단한 dict 기반 캐시이며 LRU나 TTL은 적용하지 않았습니다.
+현재는 간단한 dict 기반 캐시이며 LRU나 TTL은 적용하지 않았습니다. 워커 재시작 시 캐시는 모두 소실되고 S3에서 다시 로드됩니다.
 
 ## 10. 장애 처리와 멱등성
 
@@ -298,11 +306,19 @@ consumer는 `enable_auto_commit=False`로 동작합니다.
 
 - 재시도 횟수 추적: `(partition, offset)` 기준
 - backoff: `2 ** retry_count`
-- 최대 횟수 초과 시 commit 후 메시지 스킵
+- 최대 횟수 초과 시 DLQ 토픽(`fairytale_dlq` 기본값)으로 격리 후 commit
 
-현재는 DLQ는 구현되어 있지 않고, 로그 후 스킵하는 형태입니다.
+### 10.4 DLQ(Dead Letter Queue) 격리
 
-### 10.4 멱등 처리
+다음 케이스가 DLQ로 격리됩니다.
+
+- JSON 파싱 실패(poison message)
+- 일반 예외가 `MAX_RETRIES`(기본 5회) 초과
+- `BibleNotReadyError`가 `MAX_RETRIES` 초과 — INIT가 영원히 안 올 가능성
+
+DLQ payload는 원본 토픽/파티션/오프셋/페이로드 + `failureReason`/`lastError`/`retryCount`/`failedAt`을 포함합니다. DLQ 전송이 실패해도 메인 consumer 루프는 죽지 않도록 예외를 흡수합니다.
+
+### 10.5 멱등 처리
 
 PAGE 처리 전에 `storage.page_exists(fairytale_id, page_no)`를 확인합니다.
 
@@ -310,6 +326,8 @@ PAGE 처리 전에 `storage.page_exists(fairytale_id, page_no)`를 확인합니�
 
 - 이미지 재생성 생략
 - 기존 URL을 결과 토픽으로 다시 publish
+
+INIT도 idempotent — S3에 `bible.json`과 모든 reference가 이미 있으면 GPT-4o/FLUX 호출 없이 캐시만 채우고 종료합니다. (단, 시스템 프롬프트 가드가 바뀌어도 기존 bible은 갱신되지 않습니다 — 새 동화 ID로 처리하거나 해당 S3 자료를 지워야 새 가드 효과가 적용됩니다.)
 
 이 방식으로 중복 메시지나 재시도 상황에서 생성 비용을 줄입니다.
 
@@ -333,15 +351,20 @@ api_klein/storage.py
 
 api_klein/pipeline/llm_prompt_extractor.py
   GPT-4o 기반 캐릭터 바이블 생성과 페이지 장면 추출.
+  종별 anatomy 가드, VILLAIN 톤 가이드, 장면 연속성/중복 회피 규칙 포함.
 
 api_klein/pipeline/generator_klein.py
   FLUX.2-klein-4B 파이프라인 로드 및 reference/page 이미지 생성.
+  reference 이미지는 흰 배경 풀바디, 페이지는 multi-image 가이던스로 전달.
 
 api_klein/pipeline/model_manager.py
   단일 프로세스에서 모델을 공유하는 싱글턴 로더.
 
 api_klein/pipeline/story_pipeline.py
-  테마 힌트, 프롬프트 조합, 보조 텍스트 정리 로직 제공.
+  테마 키(KOREAN_TRADITIONAL 등)를 positive/negative 배경 힌트로 변환.
+
+api_klein/pipeline/config.py
+  테마별 배경/네거티브 힌트 정의(`THEME_EXPANSIONS`).
 ```
 
 ## 12. 현재 트레이드오프
@@ -362,10 +385,11 @@ api_klein/pipeline/story_pipeline.py
 
 ## 13. 향후 개선 후보
 
-- DLQ 토픽 추가
-- 워커 다중화와 partition 전략 정교화
+- 워커 다중화와 partition 전략 정교화(`fairytaleId` 파티션 키 + 다중 워커)
 - presigned URL 기반 비공개 S3 배포
-- 캐시 eviction 정책 도입
+- 캐시 eviction 정책 도입(LRU/TTL)
+- DLQ 자동 재처리 도구
+- OpenAI 쿼터/헬스 체크 + 알람 채널
 - 페이지 생성 결과 품질 검수 단계 추가
 - reference 강도를 제어할 수 있는 generation 옵션 실험
 

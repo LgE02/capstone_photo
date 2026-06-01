@@ -6,13 +6,11 @@ FLUX.2-klein-4B 기반 동화 삽화 이미지 생성기 (api_klein 독립 복�
 - Qwen3 텍스트 인코더 (최대 40,960 토큰)
 """
 
-import os
 import time
 import torch
 from PIL import Image
 from typing import Optional
 
-from api_klein.pipeline.config import OUTPUT_CONFIG
 
 TRANSFORMER_REPO = "Photoroom/FLUX.2-klein-4b-fp8-diffusers"
 BASE_REPO = "black-forest-labs/FLUX.2-klein-4B"
@@ -28,7 +26,6 @@ class KleinImageGenerator:
             self.device = device
 
         self.pipeline = None
-        self._character_reference: Optional[Image.Image] = None
 
         print(f"[KleinGenerator] 디바이스: {self.device}")
         print(f"[KleinGenerator] 베이스 모델: {BASE_REPO}")
@@ -68,7 +65,7 @@ class KleinImageGenerator:
         print("FLUX.2-klein-4B 로딩 완료!\n")
         return self
 
-    # ── 캐릭터 레퍼런스 관리 ────────────────────────────────────────────────
+    # ── 캐릭터 레퍼런스 ─────────────────────────────────────────────────────
 
     def generate_character_reference(
         self,
@@ -77,7 +74,7 @@ class KleinImageGenerator:
     ) -> Image.Image:
         """
         캐릭터 레퍼런스 이미지 생성.
-        동화 시작 전 한 번 호출해서 이후 모든 장면에 재사용.
+        동화 시작 전 역할별 1회씩 호출해서 이후 모든 페이지 생성 시 reference_images 로 재사용.
         """
         if self.pipeline is None:
             raise RuntimeError("먼저 .load()를 호출하세요.")
@@ -85,12 +82,16 @@ class KleinImageGenerator:
         style_prefix = (
             "Children's picture book illustration, "
             "semi-painterly digital art with soft cel shading, "
-            "storybook character proportions with expressive features, "
+            "gentle storybook character proportions, "
             "warm color palette, soft picture-book aesthetic, NOT photorealistic. "
         )
         full_prompt = (
             style_prefix + character_prompt
-            + " Full body portrait, character centered on white background, clear details."
+            + " Full body portrait, character centered on white background, clear details. "
+            + "The face is fully visible with eyes clearly readable. Fur or skin tone is "
+            + "even across the entire face — NO dark patches around the eyes, NO mask-like "
+            + "markings, NO eye-area shadow that could look like a worn mask. "
+            + "No rope wrappings, no leather bands, no warrior costume on limbs."
         )
 
         print(f"[KleinGenerator] 캐릭터 레퍼런스 생성 중...")
@@ -105,13 +106,8 @@ class KleinImageGenerator:
             generator=generator,
         ).images[0]
 
-        self._character_reference = result
         print(f"  → 캐릭터 레퍼런스 생성 완료")
         return result
-
-    def set_character_reference(self, image: Image.Image) -> None:
-        """외부에서 레퍼런스 이미지 직접 설정."""
-        self._character_reference = image
 
     # ── 메인 생성 ───────────────────────────────────────────────────────────
 
@@ -121,18 +117,10 @@ class KleinImageGenerator:
         seed: Optional[int] = None,
         width: int = 1024,
         height: int = 1024,
-        use_reference: bool = True,
         num_images: int = 1,
         reference_images: Optional[list[Image.Image]] = None,
     ) -> tuple[list[Image.Image], float]:
-        """
-        장면 삽화 생성.
-
-        reference_images가 명시되면 그 리스트를 multi-image로 주입 (등장 역할별 레퍼런스).
-        그 외엔 use_reference=True + self._character_reference 설정된 경우 단일 레퍼런스 사용.
-
-        Returns: (PIL Image 리스트, 소요시간)
-        """
+        """장면 삽화 생성. reference_images 가 주어지면 multi-image 가이던스로 주입."""
         if self.pipeline is None:
             raise RuntimeError("먼저 .load()를 호출하세요.")
 
@@ -152,12 +140,11 @@ class KleinImageGenerator:
 
         if reference_images:
             kwargs["image"] = list(reference_images)
-        elif use_reference and self._character_reference is not None:
-            kwargs["image"] = [self._character_reference]
 
         ref_count = len(kwargs["image"]) if "image" in kwargs else 0
         print(f"[KleinGenerator] 이미지 생성 중...")
-        print(f"  프롬프트: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
+        print(f"  프롬프트 (full):")
+        print(f"    {prompt}")
         print(f"  크기: {width}x{height} | 레퍼런스: {ref_count}장")
 
         start_time = time.time()
@@ -168,47 +155,7 @@ class KleinImageGenerator:
         print(f"  완료! ({elapsed:.1f}초, {len(images)}장)")
         return images, elapsed
 
-    # ── 저장 ────────────────────────────────────────────────────────────────
-
-    def save_images(
-        self,
-        images: list[Image.Image],
-        output_dir: Optional[str] = None,
-        prefix: str = "fairytale_klein",
-    ) -> list[str]:
-        """생성된 이미지 저장."""
-        output_dir = output_dir or OUTPUT_CONFIG["output_dir"]
-        os.makedirs(output_dir, exist_ok=True)
-
-        saved_paths = []
-        timestamp = int(time.time())
-        output_size = OUTPUT_CONFIG.get("output_size")
-
-        for i, img in enumerate(images):
-            if output_size is not None:
-                img = img.resize(output_size, Image.LANCZOS)
-
-            filename = f"{prefix}_{timestamp}_{i+1:02d}.png"
-            path = os.path.join(output_dir, filename)
-            img.save(path, format="PNG")
-            saved_paths.append(path)
-            size_info = f"{output_size[0]}x{output_size[1]}" if output_size else f"{img.width}x{img.height}"
-            print(f"  저장: {path} ({size_info})")
-
-        return saved_paths
-
-    def save_character_reference(self, output_dir: Optional[str] = None) -> Optional[str]:
-        """캐릭터 레퍼런스 이미지 저장."""
-        if self._character_reference is None:
-            return None
-
-        output_dir = output_dir or OUTPUT_CONFIG["output_dir"]
-        os.makedirs(output_dir, exist_ok=True)
-
-        path = os.path.join(output_dir, f"character_reference_{int(time.time())}.png")
-        self._character_reference.save(path, format="PNG")
-        print(f"  캐릭터 레퍼런스 저장: {path}")
-        return path
+    # ── 라이프사이클 ────────────────────────────────────────────────────────
 
     def unload(self) -> None:
         """모델 언로드 (메모리 해제)."""

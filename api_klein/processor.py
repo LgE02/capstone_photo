@@ -3,7 +3,7 @@
 카프카 메시지 1건을 받아 처리. 메시지 타입은 **토픽 이름**으로 판별:
 
   토픽 KAFKA_TOPIC_INIT (예: fairytale_created)
-    payload: {fairytaleId, setting, character_type, characters}
+    payload: {fairytaleId, setting, char_species, characters}
     → bible.json + 역할별 레퍼런스 이미지를 S3 에 생성. 결과 publish 없음.
 
   토픽 KAFKA_TOPIC_PAGE (예: fairytale_paragraph)
@@ -104,6 +104,11 @@ class FairytaleProcessor:
         self._ref_cache: dict[int, dict[str, Image.Image]] = {}
         # fairytale_id → bible payload
         self._bible_cache: dict[int, dict[str, Any]] = {}
+        # fairytale_id → 과거 페이지 장면 히스토리 (공간 일관성 유지용)
+        # 각 항목: {"page_no": int, "sentences": list[str], "narrative_hint": str, "focus_roles": list[str]}
+        # 페이지 N 처리 시 1..N-1 의 항목을 GPT-4o 에 함께 전달.
+        # 워커 메모리 한정 — 재시작 시 손실 (발표 데모 범위).
+        self._scene_history: dict[int, list[dict[str, Any]]] = {}
 
     # ── 진입점 ─────────────────────────────────────────────────────────────
 
@@ -140,8 +145,8 @@ class FairytaleProcessor:
             self._ensure_initialized(
                 fairytale_id=fairytale_id,
                 setting=str(_pick(message, "setting", default="FOREST_NATURE")),
-                character_type=str(
-                    _pick(message, "character_type", "characterType", default="ETC")
+                char_species=str(
+                    _pick(message, "char_species", "charSpecies", default="ETC")
                 ).upper(),
                 characters=dict(characters),
             )
@@ -183,7 +188,7 @@ class FairytaleProcessor:
         self,
         fairytale_id: int,
         setting: str,
-        character_type: str,
+        char_species: str,
         characters: dict[str, str],
     ) -> None:
         """입력에 명시된 역할들의 레퍼런스 + bible.json 이 S3에 있는지 확인하고 없으면 생성.
@@ -211,13 +216,13 @@ class FairytaleProcessor:
             bible_t0 = time.time()
             visual_descriptions = extract_character_bible(
                 setting=setting,
-                character_type=character_type,
+                char_species=char_species,
                 characters=characters,
             )
             bible_payload = {
                 "fairytaleId": fairytale_id,
                 "setting": setting,
-                "character_type": character_type,
+                "char_species": char_species,
                 "characters": characters,
                 "visual_descriptions": visual_descriptions,
             }
@@ -262,15 +267,28 @@ class FairytaleProcessor:
         visual_descriptions = bible_payload["visual_descriptions"]
         setting = bible_payload.get("setting", "FOREST_NATURE")
 
+        # 과거 페이지 히스토리 — 공간/상황 일관성 유지용
+        previous_scenes = self._scene_history.get(fairytale_id, [])
+
         # 장면 분석
         scene = extract_page_scene(
             sentences=sentences,
             character_bible=visual_descriptions,
             setting=setting,
+            previous_scenes=previous_scenes,
         )
         focus_roles: list[str] = scene["focus_roles"]
         narrative_hint: str = scene["narrative_hint"]
         print(f"[processor] page {page_no} 분석 — 등장:{focus_roles}")
+        print(f"[processor]   narrative_hint = {narrative_hint!r}")
+
+        # 이 페이지를 히스토리에 추가 (생성 성공 여부와 무관하게 분석 결과는 기록)
+        self._scene_history.setdefault(fairytale_id, []).append({
+            "page_no": page_no,
+            "sentences": sentences,
+            "narrative_hint": narrative_hint,
+            "focus_roles": focus_roles,
+        })
 
         # 등장 역할의 레퍼런스 로드
         refs: list[Image.Image] = []
@@ -346,7 +364,18 @@ class FairytaleProcessor:
                 desc = f"a {role.lower()} character"
 
             if ctype == "ANIMAL":
-                desc = f"{desc} — this character has a full animal body"
+                # visual_description 키워드로 새 anatomy 안전망 — bible 가드가 못 잡은
+                # 케이스(과거에 만들어진 깨진 bible)도 페이지 단계에서 한 번 더 잡음.
+                desc_lower = desc.lower()
+                if any(k in desc_lower for k in ("feather", "beak", "wing", "talon")):
+                    desc = (
+                        f"{desc} — this character has full bird anatomy: "
+                        f"eyes on the sides of the head (not centered like a human face), "
+                        f"no smile-line and no lip corners beside the beak, "
+                        f"feathers not fur"
+                    )
+                else:
+                    desc = f"{desc} — this character has a full animal body"
             elif ctype == "HUMAN":
                 desc = f"{desc} — this character is a human person"
 
@@ -371,14 +400,24 @@ class FairytaleProcessor:
 
         action = f"Scene: {narrative_hint}." if narrative_hint else ""
         background = f"Background: {world.positive_hint}."
-        composition = (
-            "Wide establishing shot showing the character(s) and the background clearly. "
-            "Characters are large and prominent in the foreground."
+
+        # 그림책 톤 — medium shot 기본. cinematic angle 안 씀.
+        visibility = (
+            "Medium shot — characters shown full-body or upper-body, "
+            "clearly readable, surroundings visible."
+        )
+
+        # 말풍선/텍스트 금지 — 모델이 임의로 그리는 garbled letter 방지.
+        no_text = (
+            "Absolutely no speech bubbles, dialogue balloons, thought bubbles, "
+            "captions, signs, posters, banners, or any letters, words, or numbers "
+            "anywhere in the image."
         )
 
         parts = [STYLE_PREFIX, char_sentence]
         if action:
             parts.append(action)
         parts.append(background)
-        parts.append(composition)
+        parts.append(visibility)
+        parts.append(no_text)
         return " ".join(parts)

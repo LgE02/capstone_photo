@@ -2,7 +2,7 @@
 
 S3 폴더 구조:
     fairytales/{fairytaleId}/
-      bible.json                       (캐릭터 visual_description + setting + character_type)
+      bible.json                       (캐릭터 visual_description + setting + char_species)
       references/HERO.png
       references/VILLAIN.png
       references/DISPATCHER.png
@@ -19,13 +19,6 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 from PIL import Image
-
-
-# Propp 민담 형태론 표준 역할들. 메시지에 어느 부분집합이든 들어올 수 있음.
-KNOWN_ROLES = ("HERO", "VILLAIN", "HELPER", "DISPATCHER", "FALSE_HERO", "DONOR")
-
-# 호환을 위한 alias (구 API 사용처). 새 코드는 KNOWN_ROLES 또는 message['characters'].keys() 사용 권장.
-ROLES = KNOWN_ROLES
 
 
 class S3Storage:

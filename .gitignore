@@ -16,3 +16,5 @@ dataset/
 # IDE
 .idea/
 .vscode/
+
+.claude

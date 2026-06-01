@@ -11,107 +11,131 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Kafka 기반 파이프라인용 — Propp 민담 형태론 역할 스키마 (가변)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# 알려진 역할들 (Propp 형태론). 메시지에 어느 부분집합이든 들어올 수 있음.
-KNOWN_ROLES = ("HERO", "VILLAIN", "HELPER", "DISPATCHER", "FALSE_HERO", "DONOR")
-ROLES = KNOWN_ROLES  # 이전 import 호환용
-
 
 _CHARACTER_BIBLE_SYSTEM = """\
 You generate visual descriptions of fairytale characters for a children's picture-book
 illustration generator (FLUX.2-klein-4B, Qwen3 text encoder).
 
-You will receive:
-- setting: cultural/historical setting (e.g. KOREAN_TRADITIONAL, EUROPEAN_MEDIEVAL)
-- character_type: applies to ALL roles in this fairytale. One of HUMAN / ANIMAL / ETC.
-  - HUMAN: every character is rendered as a human child/person
-  - ANIMAL: every character is anthropomorphic — animal body, expressive
-            child-like proportions, animal-appropriate cultural attire
-  - ETC: every character is a spirit / dokkaebi / fairy / celestial being
-  This determines the *type* field for EVERY role in the output. Do NOT mix types.
-  If a Korean name suggests a different type (e.g. character_type=ANIMAL but
-  the name is "할아버지"), still honor character_type — render "할아버지" as an
-  elderly anthropomorphic animal (e.g. a noble old rabbit in hanbok). The cast
-  must be visually coherent.
-- characters: dict mapping Propp morphology role → Korean character name.
-  Roles can be any subset of: HERO, VILLAIN, HELPER, DISPATCHER, FALSE_HERO, DONOR.
+━━━ INPUTS ━━━
+- setting: cultural/historical setting (KOREAN_TRADITIONAL, EUROPEAN_MEDIEVAL, etc.)
+- char_species: HUMAN / ANIMAL / ETC — applies to ALL roles. Whole cast shares
+  this same type for visual coherence.
+  - HUMAN: human child/person, picture-book chibi proportions
+  - ANIMAL: anthropomorphic — animal body, animal-appropriate cultural attire
+  - ETC: spirit / dokkaebi / fairy / celestial being
+  If a Korean name conflicts with char_species (e.g. ANIMAL + "할아버지"),
+  honor char_species — render as elderly anthropomorphic animal in setting attire.
+- characters: dict mapping Propp role → Korean name. Roles are a subset of:
+  HERO, VILLAIN, HELPER, DISPATCHER, FALSE_HERO, DONOR.
 
-For EACH role, produce:
-- type: ALWAYS equal to the input character_type (HUMAN/ANIMAL/ETC).
-        Do NOT infer per-role types from Korean names — the entire cast
-        shares the same type.
-- visual_description: a vivid English description with:
-    1. Body / skin / fur / scale appearance
-    2. Era-accurate clothing or covering matching the setting
-    3. ONE distinctive accessory or prop
-    4. ONE unique physical feature
-    5. Size descriptor (small, large, stocky, slim, ...)
-
-IMPORTANT — do NOT include emotion or expression words in visual_description.
-Avoid: smiling, friendly expression, cheerful, menacing, glaring, angry, sad,
-       sparkling eyes, soft smile, etc.
-The reference image generated from this description is reused across ALL pages, so
-the character must look neutral and emotion-free in the reference. Per-page emotion
-is controlled separately by the scene prompt.
-
-NEVER include injury or violence-related details as physical features.
-This applies to EVERY role (HERO/VILLAIN/HELPER/DISPATCHER/FALSE_HERO/DONOR)
-and EVERY type (HUMAN/ANIMAL/ETC). VILLAIN does NOT get a free pass for this.
-- NO scars, wounds, cuts, bruises, blood, broken/missing limbs, eyepatches over injuries
-- NO "fierce look from a battle scar", "weathered face from old fights", or similar
-This is a children's picture book — every character appears visually whole and unharmed.
-
-Good safe choices for "ONE unique physical feature" (item 4) — pick whichever fits the type:
-
-For HUMAN / ETC (people, dokkaebi, fairies, spirits):
-- distinctive hair (long braid, curly bangs, twin ponytails, gray streak, hair color)
-- specific eye color (golden, emerald, deep blue)
-- a single small mole or freckle (cosmetic only, not injury)
-- glasses or monocle (optional)
-- horn shape (for dokkaebi/oni-like) or pointed ear tip (for fairy/elf-like)
-- a glowing halo or magical aura (for celestial/spirit characters)
-
-For ANIMAL:
-- distinctive ear shape (tufted ears, drooping ears, oversized ears)
-- distinctive tail (bushy, ringed pattern, extra long, short pom-pom)
-- fur/feather/scale color variation (white chest blaze, dark mask around eyes, color-tipped tail)
-- oversized paws / webbed feet / fluffy chest fur / shell pattern
-- natural markings (stripes, spots, swirls — natural patterns only)
-- specific eye color (golden, emerald, amber)
-
-Universal options (any type):
-- a single small accessory-feature like a flower tucked behind the ear, a leaf in the hair
-
-Cultural accuracy: use your knowledge of the setting to choose the right attire.
-- Joseon Korea: hanbok (jeogori + baji/chima), gat hat for nobility, straw sandals for commoners,
-  rough hemp work clothes + white headband for woodcutter (나무꾼),
-  flowing celestial robe with ribbon ornament for celestial maiden (선녀, NO wings)
-- Medieval Europe: tunic, hose, cloak; knight = chainmail; witch = black robe + pointed hat
-- Fantasy: world-appropriate fantasy outfit
-NOT: Chinese cross-collar hanfu (wrong culture), modern clothes, generic anime proportions
-
-Output strictly valid JSON, no markdown. Keys MUST match input role names exactly:
+━━━ OUTPUT (strict JSON, no markdown) ━━━
 {
-  "<ROLE_NAME>": { "name": "<Korean name>", "type": "ANIMAL|HUMAN|ETC", "visual_description": "..." },
+  "<ROLE>": {"name": "<Korean>", "type": "<HUMAN|ANIMAL|ETC>", "visual_description": "..."},
   ...
 }
-Include an entry for every role in the input. Do NOT add roles not in the input.
+Include every input role. Add none beyond input.
+
+━━━ VISUAL_DESCRIPTION STRUCTURE ━━━
+A vivid English description containing:
+1. Body / skin / fur / scale appearance
+2. Era-accurate clothing or covering matching the setting
+3. ONE distinctive accessory or prop that fits the archetype
+4. ONE unique physical feature
+5. Size descriptor (small, large, stocky, slim, ...)
+
+The reference image is REUSED across all pages, so write a NEUTRAL appearance.
+Do NOT include emotion words (smiling, glaring, friendly, menacing, sad).
+Per-page emotion is handled separately by the scene prompt.
+
+━━━ FACE & SAFETY RULES (every role, every type) ━━━
+- Faces ALWAYS fully visible — NO mask, eyepatch, hood-covering-face, or any
+  face-concealing accessory. Eyes clearly readable against surrounding fur/skin.
+- For raccoon-like animals: write "raccoon-style natural fur pattern" — never the
+  word "mask".
+- NO injuries (scars, wounds, cuts, bruises, blood, missing limbs).
+
+━━━ VILLAIN TONE — DARKER, NOT HORROR ━━━
+VILLAIN should look DARKER and slightly intimidating — the reader senses unease
+at first glance — but not horror-movie scary.
+
+ENCOURAGED for VILLAIN:
+- Darker color palette than HERO/HELPER (deep grey, deep brown, deep purple,
+  forest green, midnight blue, charcoal — NOT pure jet black, NOT pastel)
+- Imposing / watchful / weighty posture and silhouette
+- One iconic archetype cue: witch's pointed hat / wolf's sharp profile and
+  visible canines / bear's broad imposing build / tiger's bold stripes
+- Descriptors like "imposing", "watchful", "weighty", "stern" are OK
+  (these describe physique, not emotion)
+
+FORBIDDEN for VILLAIN (these tip into horror):
+- Glowing red eyes, dripping fangs bared at viewer
+- Visible shadow aura around the body
+- Skull motifs, spiked armor, chains, rope/leather warrior wrappings
+- Stacking many darkness markers at once — pick AT MOST one or two natural ones
+- Emotion words like "sinister", "evil-looking", "menacing", "creepy"
+  (describe physique, not feelings)
+
+The story's menace comes from PAGE ACTIONS (growling, blocking the path, looming)
+— the reference just sets the dark tone.
+
+━━━ CULTURAL ACCURACY QUICK GUIDE ━━━
+- Joseon Korea: hanbok (jeogori + baji/chima), gat hat for nobility, straw
+  sandals for commoners. Woodcutter: hemp clothes + white headband. Celestial
+  maiden: flowing robe with ribbon ornament, NO wings.
+- Medieval Europe: tunic + hose + cloak. Knight: chainmail. Witch: deep-color
+  robe + pointed hat (single iconic cue).
+- Fantasy: world-appropriate fantasy outfit.
+- NOT: Chinese hanfu, modern clothes, generic anime proportions.
+
+━━━ ANIMAL SPECIES ANATOMY (anatomy reference — do NOT copy these words into output) ━━━
+
+These rules guide YOUR word choice when writing visual_description.
+Use them to pick correct anatomy terms (feathers vs fur, beak vs mouth, ...).
+DO NOT write meta-phrases like "side-profile", "one eye visible", "front view",
+or "camera angle" into the description itself — the description is
+camera-agnostic. Per-page camera angle is decided separately by the scene
+prompt.
+
+BIRD (crow, raven, magpie, owl, sparrow, rooster, duck, swallow, parrot, ...):
+  - Anatomy facts (for YOUR reference, not output text):
+    · Eyes are placed on the SIDES of the head, not centered like a human face.
+    · There is no mouth, no lip corners, no smile-line — only a beak.
+    · Forelimbs are wings (not arms); feet are talons (not paws).
+  - When writing visual_description:
+    · Use words: feathers, beak, talons, wings. Never fur/paws/mouth.
+    · Describe eye color and shape, NOT eye position or visibility.
+    · Accessories attach to: head crown, neck collar, leg anklet, between
+      wing feathers, or held in beak/talons. NEVER "behind the ear".
+
+REPTILE / FISH / AMPHIBIAN (frog, turtle, snake, lizard, fish, ...):
+  - Use words: scales (or smooth amphibian skin for frogs). No external ears.
+  - Expression via eye shape only — no lip corners, no smile-line.
+  - Accessories: small hat, neck pendant, vine belt, held tool.
+
+MAMMAL (default — existing guide applies): fur, paws, external ears,
+whiskers OK. The PER-TYPE FEATURE OPTIONS below mostly target mammals.
+
+━━━ PER-TYPE FEATURE OPTIONS (item 4 of visual_description) ━━━
+HUMAN / ETC: distinctive hair (braid/bangs/color), eye color, small mole or
+freckle, glasses, horn shape (dokkaebi/oni), pointed ear (fairy/elf), glowing
+halo (celestial/spirit).
+ANIMAL: ear shape (tufted/drooping/oversized), tail (bushy/ringed/extra long),
+fur variation (white chest blaze, color-tipped tail, light belly), oversized
+paws / webbed feet / shell pattern, natural markings (stripes/spots/swirls),
+specific eye color.
+Universal: flower behind ear, leaf in hair.
 """
 
 
 def extract_character_bible(
     setting: str,
-    character_type: str,
+    char_species: str,
     characters: dict[str, str],
     model: str = "gpt-4o",
 ) -> dict[str, dict[str, str]]:
@@ -119,8 +143,8 @@ def extract_character_bible(
 
     Args:
         setting: 예 "KOREAN_TRADITIONAL"
-        character_type: 전체 캐릭터의 의인화 타입. "HUMAN" / "ANIMAL" / "ETC"
-                        — 입력 dict의 모든 role이 이 타입으로 통일 렌더링됨.
+        char_species: 전체 캐릭터의 의인화 타입. "HUMAN" / "ANIMAL" / "ETC"
+                      — 입력 dict의 모든 role이 이 타입으로 통일 렌더링됨.
         characters: {역할: 한국어 이름} 형태. 역할 수는 가변.
                     예: {"HERO": "개구리", "VILLAIN": "늑대", "HELPER": "자라",
                          "DISPATCHER": "사자", "FALSE_HERO": "여우"}
@@ -139,7 +163,7 @@ def extract_character_bible(
     role_lines = "\n".join(f"  {role}: {name}" for role, name in characters.items())
     user_prompt = (
         f"setting: {setting}\n"
-        f"character_type (applies to ALL roles — they all share this type): {character_type}\n"
+        f"char_species (applies to ALL roles — they all share this type): {char_species}\n"
         f"characters:\n{role_lines}\n\n"
         f"Generate the JSON character bible following the system instructions. "
         f"The JSON must have exactly these keys: {list(characters.keys())}."
@@ -158,7 +182,7 @@ def extract_character_bible(
     raw = response.choices[0].message.content
     parsed = json.loads(raw)
 
-    forced_type = character_type.upper()
+    forced_type = char_species.upper()
     bible: dict[str, dict[str, str]] = {}
     for role in characters.keys():
         entry = parsed.get(role, {}) or {}
@@ -171,69 +195,171 @@ def extract_character_bible(
 
 
 _PAGE_SCENE_SYSTEM = """\
-You analyze a single page (2-3 Korean sentences) of a fairytale and extract scene info.
+You analyze a single page (1 to 3 Korean sentences) of a fairytale and write the
+illustration scene prompt.
 
-Inputs:
+━━━ OUTPUT (strict JSON, no markdown) ━━━
+{ "narrative_hint": "<single English sentence, ~40-55 words>",
+  "focus_roles": ["<ROLE>", ...] }
+Use literal role names (HERO, VILLAIN, HELPER, DISPATCHER, FALSE_HERO, DONOR).
+
+━━━ INPUTS ━━━
 - setting (e.g. KOREAN_TRADITIONAL)
-- character_bible: pre-existing visual descriptions keyed by role name
-- sentences: Korean text
+- character_bible: pre-existing visual descriptions keyed by role
+- previous_pages (may be empty): summaries of earlier pages (oldest first),
+  each { page_no, focus, hint } — use for spatial/situational continuity
+- sentences: Korean text of the CURRENT page
 
-For EACH page, produce:
-1. focus_roles — which roles APPEAR visually in this page (subset of bible keys, non-empty).
-   "Mentioning" a name doesn't count — the character must physically be in the depicted moment.
-2. narrative_hint — single English scene sentence (max ~50 words) including:
-   - what is happening (action, body language, emotion)
-   - location/environment hint
-   - camera angle (close-up / wide shot / low angle / over-the-shoulder / action / bird's-eye)
-   Do NOT include art-style words ("illustration", "pastel", "cartoon").
-   Do NOT redescribe character outfits — that's in the bible.
+━━━ focus_roles ━━━
+The roles PHYSICALLY VISIBLE in the depicted moment (non-empty, subset of bible
+keys). Mere mentions don't count.
 
-━━━ EMOTION SYMBOLS (optional accent — graphic only, NO text) ━━━
-For wordless strong moments you MAY place a SINGLE graphic emotion shape near the
-character's head. These are pure visual icons (the model cannot render readable text).
+━━━ SCENE SELECTION ━━━
+Pick the SINGLE most visually striking moment. Position in the sentences does
+not matter (climax can appear at any sentence — only visual weight matters).
 
-  Shock / surprise   → "a bold red exclamation mark '!' shape above [character]'s head"
-  Confusion          → "a curling question mark '?' shape beside [character]'s head"
-  Realization        → "a glowing yellow exclamation '!' shape above [character]'s head"
-  Shock + confusion  → "interrobang '?!' shape bursting above [character]'s head"
-  Affection          → "small pink heart shapes '♥' floating around [character]'s head"
-  Wonder             → "small star shapes '★' twinkling around [character]'s head"
-  Anger              → "manga cross-hatched anger lines '#' on [character]'s forehead"
-  Embarrassment      → "a single large teardrop sweatdrop next to [character]'s temple"
-  Joy / music        → "small musical note shapes '♪' floating around [character]"
+Weight ranking:
+- HIGHEST: external events with clear motion (appears, falls, runs, fights,
+  discovers, transforms, glows). Pick this when available.
+- MIDDLE: meaningful interaction (meet, hand over, point at something).
+- LOWEST: pure setup, pure dialogue ("said"), pure inner feelings ("felt sad").
+  Avoid as the main subject unless nothing else exists.
 
-Rules:
-- ONE symbol max, only when body language alone wouldn't convey the strong moment.
-- Describe as a SHAPE/ICON, never as containing text or words.
-- Quiet scenes → no symbol. Body language alone.
+ACTION beats PEACEFUL RESOLUTION:
+If the page has both an action moment AND a peaceful resolution after
+(handshake, becoming friends, thanking, "lived happily"), depict the ACTION.
+Resolution is inferred from the action's outcome.
+
+Skip-list verbs (do NOT make these the focus):
+  "became friends", "lived happily", "thanked", "made up", "forgave",
+  "shook hands", "smiled at each other"
+
+For inner feelings ("felt happy/scared"): depict the TRIGGER event or the
+outward body language (eyes wide, hands covering mouth), not the feeling.
+For pure speech ("said"): show the emotion/reaction accompanying it, or the
+character speaking with a clear gesture.
+
+━━━ SPATIAL & SITUATIONAL CONTINUITY ━━━
+If previous_pages exists, carry over state the current text doesn't restate:
+- LOCATION: character on a tree stays on the tree until text says they came down
+- POSE: flying / perched / hiding state persists across pages
+- POSITION: characters keep their relative distance from each other
+- OBJECTS: items picked up earlier are still being held
+
+━━━ SCENE UNIQUENESS ACROSS PAGES ━━━
+Each page's narrative_hint MUST depict a DIFFERENT visual moment from any
+previous page's hint. If adjacent pages cover the same action sequence
+(throw → react → result, or encounter → chase → escape), pick the beat that
+hasn't been shown yet:
+- previous page = the THROW    → current page = the IMPACT/REACTION
+- previous page = the ENCOUNTER → current page = the CONFRONTATION/CHASE
+- previous page = the QUESTION  → current page = the ANSWER/RESPONSE
+
+NEVER repeat the same key visual beat across two adjacent pages. Even when
+the page text overlaps (same characters, same general scene), pick a
+distinct MOMENT WITHIN that scene:
+- different camera focus (close-up on reaction vs wide on action)
+- different highlighted character (HELPER's warning vs VILLAIN's flinch)
+- different stage of the action (mid-flight acorn vs acorn-just-hit)
+
+Example — two adjacent pages of the squirrel/wolf throw scene:
+  page 4 hint (the throw):   "the lone HERO mid-fling, acorn leaving paw,
+                              the lone VILLAIN crouched below with eyes
+                              narrowing in surprise"
+  page 5 hint (the impact):  "close-up on the lone VILLAIN flinching back
+                              as the acorn bounces off its shoulder, '!' shape
+                              above its head, the lone HERO partly visible
+                              above on the branch"
+  → Same scene, distinct beats. Page 5 zooms in on impact rather than repeating
+    the throw composition.
+
+Example:
+  previous page 3 hint: "the lone squirrel climbs rapidly up a tall pine"
+  current sentences: "다람쥐가 도토리를 던졌어요. 늑대가 당황했어요."
+  RIGHT: "from a high pine branch, the lone squirrel flings an acorn down at
+          a single gray wolf below, which flinches with wide eyes — a bold red
+          '!' pops above the wolf's head"
+  WRONG: "the squirrel throws an acorn at the wolf in front of it" (lost
+         continuity, no singular phrasing, no symbol)
+
+━━━ WRITING THE narrative_hint ━━━
+Single English sentence (~40-55 words) containing:
+- The specific ACTION (concrete verb + body language)
+- WHO: EVERY role mentioned needs its own singular qualifier. Apply to ALL
+  focus_roles, not just HERO. Required pattern:
+    "the lone HERO" / "the lone VILLAIN" / "the lone HELPER" / "a single X"
+  NEVER bare "the HERO" or "the VILLAIN" or "the wolf" or "the cat" — every
+  diffusion-ambiguous subject duplicates. Each role independently needs its
+  own "lone/single" qualifier.
+  GOOD: "the lone HERO leans down towards the lone VILLAIN, while the lone HELPER watches"
+  BAD:  "the lone HERO leans down towards the VILLAIN, while the HELPER watches"
+        (VILLAIN and HELPER will duplicate)
+- WHERE: a specific location detail (carry from previous_pages if known)
+- Visible EMOTION from face/posture
+- Optional emotion symbol (see below)
+
+Picture book composition — NOT cinematic:
+- Default to a MEDIUM SHOT (full character or upper-body + clear surroundings)
+- Close-up only for strong emotional climax (rare)
+- Camera at eye level — no low angle, over-the-shoulder, bird's-eye, extreme wide
+- Do NOT include art-style words ("illustration", "pastel", "cartoon")
+- Do NOT redescribe character outfits (they're in the bible)
+
+━━━ EMOTION SYMBOLS — USE THEM ━━━
+A small graphic symbol near a character's head expresses emotion that body
+language leaves ambiguous. Picture books use these heavily. These symbols ARE
+ALLOWED in the image — they are graphic SHAPES, not text — even though all
+other text is forbidden (see below).
+
+Insert the exact catalog phrase into narrative_hint when applicable:
+  Surprise / shock      → "a bold red '!' shape above [role]'s head"
+  Confusion / question  → "a curling '?' shape beside [role]'s head"
+  Realization           → "a glowing yellow '!' shape above [role]'s head"
+  Shock + confusion     → "an interrobang '?!' shape above [role]'s head"
+  Affection / thanks    → "small pink heart shapes around [role]"
+  Wonder / awe          → "small star shapes twinkling around [role]"
+  Anger                 → "manga anger lines '#' on [role]'s forehead"
+  Embarrassment         → "a large sweatdrop next to [role]'s temple"
+  Joy / music           → "small musical note shapes around [role]"
+
+NEVER use speech bubbles, dialogue balloons, captions, or any container that
+implies text inside — diffusion models render garbled letters inside them.
+For shouting/calling-out emotion, use the open-mouth pose plus a bold '!'
+shape near the character's head (no bubble).
+
+When to use:
+- ADD on a clear emotional beat (sudden surprise, calling out, asking,
+  strong fear/joy/gratitude/anger).
+- SKIP for calm scenes (walking, sleeping, eating, sitting still).
+- SKIP if emotion is already obvious from the action (a character hugging =
+  affection implied, no heart needed).
+- AT MOST ONE symbol per page — pick the strongest.
+
+━━━ NO READABLE TEXT (other than emotion-symbol punctuation) ━━━
+The illustration must NOT contain Korean letters (한글), English letters,
+numbers, signs, posters, banners, or any writing. Diffusion models render text
+as garbled nonsense.
+
+ALSO FORBIDDEN: speech bubbles, dialogue balloons, thought bubbles, captions,
+text boxes, or any container shape that implies text inside. Even if dialogue
+appears in the Korean sentences ("...라고 말했어요"), depict the speaker's
+open-mouth pose and gesture — never draw a bubble. Models will fill any
+bubble shape with garbled glyphs.
+
+The ONLY text-like glyphs allowed are the emotion-symbol punctuation listed
+above ('!', '?', '!?', '?!', '...'), rendered LARGE as graphic shapes near
+the character (NOT inside any bubble) — these are NOT considered text.
+
+━━━ NO EXTRA CHARACTERS ━━━
+Only characters in focus_roles appear. Even if the Korean text mentions
+"친구들" / "동물들" / "무리" / "사람들", do NOT depict specific companions.
+Describe the SETTING / ATMOSPHERE instead (drifting leaves, fluttering
+dragonflies, scattered fireflies).
 
 ━━━ MULTI-CHARACTER POSITIONING ━━━
-If 2+ roles are in focus_roles, place them spatially:
-"[role A] on the left, [role B] on the right"
-Each character has their OWN action — abilities don't transfer between characters.
-
-━━━ DO NOT INTRODUCE EXTRA CHARACTERS ━━━
-The illustration must contain ONLY the characters in focus_roles. Never describe other
-animals, people, or creatures in the scene — even if the Korean text mentions them.
-
-If the Korean text uses vague group words like "친구들" (friends), "동물들" (animals),
-"무리" (group), 사람들 (people), DO NOT depict specific companions. Instead:
-- Treat the scene as the named roles' personal moment
-- Describe the SETTING / ATMOSPHERE instead of a crowd
-- BAD: "the frog plays with his friends in the pond"
-       (model invents random bears, rabbits, ducks)
-- GOOD: "the frog hops joyfully alone among lily pads, dragonflies fluttering above the calm pond"
-       (specific safe atmospheric details — no character invention)
-- BAD: "the lion warns the frog while other animals watch"
-       (model adds extra animals)
-- GOOD: "the lion stands beside the frog at the edge of the forest, autumn leaves drifting nearby"
-
-This rule is critical — diffusion models will hallucinate any character mentioned
-in the prompt, breaking story consistency.
-
-Output strictly valid JSON, no markdown:
-{ "narrative_hint": "...", "focus_roles": ["<ROLE>", ...] }
-Use literal role name strings (HERO, VILLAIN, ...).
+With 2+ roles in focus_roles, place them spatially: "[role A] on the left,
+[role B] on the right". Each character has their own action — abilities don't
+transfer between characters.
 """
 
 
@@ -241,9 +367,17 @@ def extract_page_scene(
     sentences: list[str],
     character_bible: dict[str, dict[str, str]],
     setting: str,
+    previous_scenes: list[dict[str, Any]] | None = None,
     model: str = "gpt-4o",
 ) -> dict[str, Any]:
-    """페이지(2-4문장) → 장면 묘사 + 등장 역할 추출.
+    """페이지(1~3문장) → 장면 묘사 + 등장 역할 추출.
+
+    Args:
+        previous_scenes: 같은 동화의 과거 페이지 분석 결과 (오래된 → 최신 순).
+            각 항목 형태:
+              {"page_no": int, "sentences": list[str],
+               "narrative_hint": str, "focus_roles": list[str]}
+            None 또는 빈 리스트면 컨텍스트 없이 (첫 페이지) 분석.
 
     Returns:
         { "narrative_hint": "...", "focus_roles": ["<ROLE>", ...] }
@@ -254,10 +388,23 @@ def extract_page_scene(
     sentence_lines = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences) if s.strip())
     bible_json = json.dumps(character_bible, ensure_ascii=False, indent=2)
 
+    # 과거 페이지 요약 — 공간/상황 일관성 유지용
+    if previous_scenes:
+        history_lines = []
+        for prev in previous_scenes:
+            history_lines.append(
+                f"  page {prev['page_no']}: "
+                f"focus={prev['focus_roles']}, hint={prev['narrative_hint']}"
+            )
+        history_block = "previous_pages (oldest → newest):\n" + "\n".join(history_lines) + "\n\n"
+    else:
+        history_block = ""
+
     user_prompt = (
         f"setting: {setting}\n\n"
         f"character_bible:\n{bible_json}\n\n"
-        f"sentences (Korean):\n{sentence_lines}\n"
+        f"{history_block}"
+        f"sentences (Korean) — current page to analyze:\n{sentence_lines}\n"
     )
 
     response = client.chat.completions.create(

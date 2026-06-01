@@ -1,16 +1,5 @@
 """배경 테마에 따른 프롬프트 확장 설정을 포함하는 모듈"""
 
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-OUTPUT_CONFIG = {
-    "output_dir": str(PROJECT_ROOT / "outputs" / "klein_jobs"),
-    "save_format": "PNG",
-    "save_comparison": False,
-    "num_images_per_prompt": 1,
-    "output_size": (1024, 1024),
-}
 
 THEME_EXPANSIONS = {
     "KOREAN_TRADITIONAL": {

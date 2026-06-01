@@ -20,7 +20,7 @@
 
 이 토픽의 메시지를 받으면 워커는 다음 작업을 수행합니다.
 
-- `fairytaleId`, `setting`, `character_type`, `characters`를 읽음
+- `fairytaleId`, `setting`, `char_species`, `characters`를 읽음
 - GPT-4o로 역할별 `visual_description`을 생성
 - `bible.json`을 S3에 저장
 - 역할별 캐릭터 reference 이미지를 생성해서 S3에 저장
@@ -62,7 +62,7 @@
 {
   "fairytaleId": 17,
   "setting": "KOREAN_TRADITIONAL",
-  "character_type": "HUMAN",
+  "char_species": "HUMAN",
   "characters": {
     "HERO": "나무꾼",
     "HELPER": "선녀",
@@ -73,7 +73,7 @@
 
 ### PAGE 메시지 예시
 
-`sentences`는 줄바꿈 문자열 또는 문자열 배열 모두 허용합니다.
+한 페이지의 `sentences`는 1~3문장 가변입니다. 줄바꿈 문자열 또는 문자열 배열 모두 허용합니다.
 
 ```json
 {
@@ -113,11 +113,11 @@ fairytale_lora/
     publisher.py                      # 결과 Kafka publish
     storage.py                        # S3 업로드/다운로드
     pipeline/
-      config.py                       # 테마, 출력, 프롬프트 설정
+      config.py                       # 테마별 배경/네거티브 힌트 설정
       generator_klein.py              # FLUX 이미지 생성기
-      llm_prompt_extractor.py         # GPT-4o 기반 캐릭터/장면 분석
+      llm_prompt_extractor.py         # GPT-4o 기반 캐릭터/장면 분석 (종별 anatomy 가드 포함)
       model_manager.py                # 싱글턴 모델 로더
-      story_pipeline.py               # 프롬프트 조합 유틸리티
+      story_pipeline.py               # 테마 키 → 배경 힌트(positive/negative) 변환
 ```
 
 ## 모델 및 생성 설정
@@ -201,7 +201,26 @@ python worker.py
 - 동일 페이지가 이미 있으면 재생성 없이 결과만 재전송
 - 역할별 reference 이미지와 `bible.json`을 캐시해 중복 비용 감소
 - Kafka consumer는 수동 commit 방식으로 동작
-- 실패 시 backoff 및 최대 재시도 횟수 제한 적용
+- 실패 시 backoff + 최대 재시도, 한계 초과 시 DLQ 토픽(`fairytale_dlq` 기본값)으로 격리
+- 종별 anatomy 가드(BIRD/REPTILE/AMPHIBIAN/MAMMAL)로 의인화 캐릭터의 종 위반 방지
+
+## 테스트
+
+로컬에서 워커에 메시지를 흘려보낼 때는 `test_send.py`를 사용합니다.
+
+```bash
+# 단일 페이지 publish
+python test_send.py --id 9001 --sentences "..."
+
+# INIT만 publish (캐릭터 지정)
+python test_send.py --id 9001 --init-only --char-species ANIMAL \
+  --character HERO=까마귀 --character VILLAIN=여우
+
+# 동화 1편 시퀀스 publish (JSON 파일)
+python test_send.py --id 9001 --story story.json
+```
+
+`--story` 모드의 JSON 형식은 [test_send.py](test_send.py) 상단 docstring 참고.
 
 ## 참고
 
