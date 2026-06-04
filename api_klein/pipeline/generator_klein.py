@@ -15,6 +15,10 @@ from typing import Optional
 TRANSFORMER_REPO = "Photoroom/FLUX.2-klein-4b-fp8-diffusers"
 BASE_REPO = "black-forest-labs/FLUX.2-klein-4B"
 
+# 생성 파라미터 — 시간/품질 트레이드오프. 페이지 1장 생성 시간이 이 두 상수에 가장 민감.
+OUTPUT_RESOLUTION = 768      # 1024 대비 면적 0.56배 → 약 40% 시간 단축
+NUM_INFERENCE_STEPS = 4      # Klein 모델 학습 시 4-step 최적화. 3 이하로 내리면 이미지 깨짐 확인됨.
+
 
 class KleinImageGenerator:
     """FLUX.2-klein-4B 기반 동화 삽화 이미지 생성기."""
@@ -99,10 +103,10 @@ class KleinImageGenerator:
 
         result = self.pipeline(
             prompt=full_prompt,
-            height=1024,
-            width=1024,
+            height=OUTPUT_RESOLUTION,
+            width=OUTPUT_RESOLUTION,
             guidance_scale=1.0,
-            num_inference_steps=4,
+            num_inference_steps=NUM_INFERENCE_STEPS,
             generator=generator,
         ).images[0]
 
@@ -115,8 +119,8 @@ class KleinImageGenerator:
         self,
         prompt: str,
         seed: Optional[int] = None,
-        width: int = 1024,
-        height: int = 1024,
+        width: int = OUTPUT_RESOLUTION,
+        height: int = OUTPUT_RESOLUTION,
         num_images: int = 1,
         reference_images: Optional[list[Image.Image]] = None,
     ) -> tuple[list[Image.Image], float]:
@@ -133,7 +137,7 @@ class KleinImageGenerator:
             height=height,
             width=width,
             guidance_scale=1.0,
-            num_inference_steps=4,
+            num_inference_steps=NUM_INFERENCE_STEPS,
             generator=generator,
             num_images_per_prompt=num_images,
         )

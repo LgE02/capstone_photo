@@ -7,7 +7,7 @@
 ## 개요
 
 - 입력: Spring 등 외부 시스템이 Kafka로 보내는 동화 생성 이벤트
-- 분석: GPT-4o로 캐릭터 바이블과 페이지 장면 정보 추출
+- 분석: OpenAI Chat Completion (기본 `gpt-5.5`)로 캐릭터 바이블과 페이지 장면 정보 추출
 - 생성: `FLUX.2-klein-4B` 기반 이미지 생성
 - 저장: 캐릭터 reference 이미지와 페이지 이미지를 S3에 업로드
 - 결과 전달: 생성 완료 이미지를 Kafka 결과 토픽으로 publish
@@ -21,7 +21,7 @@
 이 토픽의 메시지를 받으면 워커는 다음 작업을 수행합니다.
 
 - `fairytaleId`, `setting`, `char_species`, `characters`를 읽음
-- GPT-4o로 역할별 `visual_description`을 생성
+- GPT-5.5로 역할별 `visual_description`을 생성 (종별 anatomy + acorn 회피 등 가드 강제)
 - `bible.json`을 S3에 저장
 - 역할별 캐릭터 reference 이미지를 생성해서 S3에 저장
 - 이후 페이지 생성에서 재사용할 수 있도록 메모리 캐시에 올림
@@ -115,7 +115,7 @@ fairytale_lora/
     pipeline/
       config.py                       # 테마별 배경/네거티브 힌트 설정
       generator_klein.py              # FLUX 이미지 생성기
-      llm_prompt_extractor.py         # GPT-4o 기반 캐릭터/장면 분석 (종별 anatomy 가드 포함)
+      llm_prompt_extractor.py         # OpenAI Chat Completion 기반 캐릭터/장면 분석 (종별 anatomy + SINGLE BEAT + PASSIVE POSITIONING 가드)
       model_manager.py                # 싱글턴 모델 로더
       story_pipeline.py               # 테마 키 → 배경 힌트(positive/negative) 변환
 ```
@@ -124,9 +124,9 @@ fairytale_lora/
 
 - 이미지 생성 모델: `black-forest-labs/FLUX.2-klein-4B`
 - transformer repo: `Photoroom/FLUX.2-klein-4b-fp8-diffusers`
-- 텍스트 분석 모델: `gpt-4o`
-- 출력 해상도: `1024x1024`
-- 추론 스텝: `4`
+- 텍스트 분석 모델: `gpt-5.5`
+- 출력 해상도: `768x768` (속도-품질 트레이드오프 — `OUTPUT_RESOLUTION` 상수)
+- 추론 스텝: `4` (`NUM_INFERENCE_STEPS` 상수 — Klein이 4-step에 최적화돼 있어 3 이하로 내리면 깨짐)
 - `guidance_scale`: `1.0`
 - reference 이미지: 등장 역할 기준 multi-image 입력 지원
 - 메모리 최적화: CPU offload, `torchao` FP8 양자화 시도 후 실패 시 BF16 fallback
@@ -179,6 +179,7 @@ pip install torchao
 - `KAFKA_SASL_MECHANISM`
 - `KAFKA_SASL_USERNAME`
 - `KAFKA_SASL_PASSWORD`
+- `OPENAI_MODEL` 기본값 `gpt-5.5` — 텍스트 분석에 쓰는 OpenAI 모델 ID. 워커 시작 시 1회 읽으므로 교체 후 재시작 필요.
 
 ## 실행
 
@@ -196,13 +197,30 @@ python worker.py
 
 ## 구현 특징
 
+### 메시지 처리
 - INIT와 PAGE를 서로 다른 Kafka 토픽으로 분리
-- PAGE가 INIT보다 먼저 도착한 경우 `BibleNotReadyError` 기반 재시도 처리
-- 동일 페이지가 이미 있으면 재생성 없이 결과만 재전송
-- 역할별 reference 이미지와 `bible.json`을 캐시해 중복 비용 감소
-- Kafka consumer는 수동 commit 방식으로 동작
-- 실패 시 backoff + 최대 재시도, 한계 초과 시 DLQ 토픽(`fairytale_dlq` 기본값)으로 격리
-- 종별 anatomy 가드(BIRD/REPTILE/AMPHIBIAN/MAMMAL)로 의인화 캐릭터의 종 위반 방지
+- PAGE가 INIT보다 먼저 도착하면 `BibleNotReadyError` → commit 보류 + 재시도
+- 동일 페이지가 이미 있으면 재생성 없이 기존 URL 재전송 (idempotent)
+- INIT도 idempotent — bible + reference가 S3에 있으면 skip
+- Kafka consumer는 수동 commit (성공 시에만 commit)
+- 실패 시 exponential backoff + 최대 재시도, 한계 초과 시 DLQ 토픽(`fairytale_dlq` 기본값)으로 격리
+
+### 프롬프트 가드 (GPT 단계)
+- **종별 anatomy** — BIRD/REPTILE/FISH/AMPHIBIAN/MAMMAL 별로 단어 선택 강제 (새한테 `fur` 금지, 측면 시 한쪽 눈만 등)
+- **acorn 회피** — 새의 prop 식상화 방지
+- **SINGLE BEAT RULE** — 한 페이지 = 한 액션 1명만 수행, 나머지는 배경 존재 (페이지가 동작 여러 개로 어색해지는 것 방지)
+- **단수 한정사 self-check** — 모든 등장 캐릭터 앞에 `"the lone X"` 자가점검 (캐릭터 복제 완화)
+- **PASSIVE CHARACTER POSITIONING** — 액션 안 하는 캐릭터에 단일 anchor + pose verb + 가시 부위 명시 강제
+- **NO EXTRA CHARACTERS** — "친구들" 같은 한국어 표현이 들어와도 무명 캐릭터 안 그림
+
+### 코드 단 가드
+- 페이지당 reference 이미지 최대 3장 (4명+ 등장 시 자동 컷)
+- ANIMAL 캐릭터 중 새 키워드 감지 시 페이지 프롬프트 안전망 자동 추가
+
+### 모델 사용
+- 텍스트 분석: `OPENAI_MODEL` (기본 `gpt-5.5`) + `reasoning_effort=low`
+- 이미지 생성: FLUX.2-klein-4B, 768×768, 4-step, `guidance_scale=1.0`
+- GPT-5.5 호환성 처리: `max_completion_tokens` 사용, `temperature` 1.0 강제
 
 ## 테스트
 

@@ -21,7 +21,7 @@
 
 1. Kafka consumer가 INIT/PAGE 메시지를 수신
 2. processor가 메시지 종류에 따라 초기화 또는 페이지 생성 수행
-3. GPT-4o가 캐릭터 바이블과 페이지 장면 정보를 추출
+3. GPT-5.5가 캐릭터 바이블과 페이지 장면 정보를 추출
 4. FLUX.2-klein-4B가 reference 이미지와 페이지 이미지를 생성
 5. S3 저장 후 Kafka result topic으로 완료 이벤트를 publish
 
@@ -35,7 +35,7 @@ Spring / upstream service
 worker.py
   -> api_klein.consumer.run_consumer_loop()
   -> api_klein.processor.FairytaleProcessor.handle_message()
-     -> GPT-4o character/page analysis
+     -> GPT-5.5 character/page analysis
      -> FLUX.2-klein-4B image generation
      -> S3 upload
      -> Kafka result publish
@@ -118,7 +118,7 @@ INIT 메시지를 받으면 `FairytaleProcessor._ensure_initialized()`가 실행
 1. `fairytaleId`, `setting`, `char_species`, `characters` 파싱
 2. S3에 기존 `bible.json`과 reference 이미지가 있는지 확인
 3. 이미 있으면 재생성하지 않고 캐시에 적재
-4. 없으면 GPT-4o로 역할별 `visual_description` 생성
+4. 없으면 GPT-5.5로 역할별 `visual_description` 생성
 5. `bible.json`을 S3에 업로드
 6. 각 역할에 대해 reference 이미지를 생성하고 S3에 업로드
 7. 메모리 캐시에 `bible`과 reference 이미지를 저장
@@ -136,16 +136,17 @@ PAGE 메시지를 받으면 `FairytaleProcessor._process_page()`가 실행됩니
 2. 이미 해당 페이지가 S3에 있으면 생성 생략
 3. 기존 결과 URL을 result topic에 다시 publish
 4. `bible.json` 로드
-5. GPT-4o로 현재 페이지의 `focus_roles`와 `narrative_hint` 추출
+5. GPT-5.5로 현재 페이지의 `focus_roles`와 `narrative_hint` 추출
 6. 현재 페이지에 실제로 등장하는 역할의 reference 이미지만 로드
 7. 최종 프롬프트 조합
 8. FLUX.2-klein-4B로 1024x1024 이미지 생성
 9. S3에 업로드
 10. 결과 Kafka topic으로 완료 메시지 publish
 
-## 6. GPT-4o의 역할
+## 6. GPT-5.5의 역할
 
-GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 구조화된 해석을 담당합니다.
+GPT-5.5는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 구조화된 해석을 담당합니다.
+모델 ID는 `.env`의 `OPENAI_MODEL`로 교체 가능 (미설정 시 `gpt-5.5`).
 
 ### 6.1 캐릭터 바이블 생성
 
@@ -212,8 +213,8 @@ GPT-4o는 이미지 생성 자체가 아니라, 이미지 생성에 필요한 �
 
 - base model: `black-forest-labs/FLUX.2-klein-4B`
 - transformer: `Photoroom/FLUX.2-klein-4b-fp8-diffusers`
-- output size: `1024x1024`
-- inference steps: `4`
+- output size: `768x768` (`OUTPUT_RESOLUTION` 상수로 통제, 1024 대비 약 40% 단축)
+- inference steps: `4` (`NUM_INFERENCE_STEPS` 상수, Klein 모델이 4-step 학습 최적화라 3 이하는 이미지 깨짐 확인됨)
 - guidance scale: `1.0`
 - dtype: BF16
 - optimization: CPU offload
@@ -271,7 +272,7 @@ fairytales/{fairytaleId}/
 - `_bible_cache`: `fairytale_id -> bible payload`
 - `_ref_cache`: `fairytale_id -> { role -> PIL.Image }`
 - `_scene_history`: `fairytale_id -> [ { page_no, sentences, narrative_hint, focus_roles } ]`
-  — 페이지 N 처리 시 1..N-1의 분석 결과를 GPT-4o에 함께 전달해 공간/상황 연속성과 장면 중복 회피에 사용
+  — 페이지 N 처리 시 1..N-1의 분석 결과를 GPT-5.5에 함께 전달해 공간/상황 연속성과 장면 중복 회피에 사용
 
 의도:
 
@@ -327,7 +328,7 @@ PAGE 처리 전에 `storage.page_exists(fairytale_id, page_no)`를 확인합니�
 - 이미지 재생성 생략
 - 기존 URL을 결과 토픽으로 다시 publish
 
-INIT도 idempotent — S3에 `bible.json`과 모든 reference가 이미 있으면 GPT-4o/FLUX 호출 없이 캐시만 채우고 종료합니다. (단, 시스템 프롬프트 가드가 바뀌어도 기존 bible은 갱신되지 않습니다 — 새 동화 ID로 처리하거나 해당 S3 자료를 지워야 새 가드 효과가 적용됩니다.)
+INIT도 idempotent — S3에 `bible.json`과 모든 reference가 이미 있으면 GPT-5.5/FLUX 호출 없이 캐시만 채우고 종료합니다. (단, 시스템 프롬프트 가드가 바뀌어도 기존 bible은 갱신되지 않습니다 — 새 동화 ID로 처리하거나 해당 S3 자료를 지워야 새 가드 효과가 적용됩니다.)
 
 이 방식으로 중복 메시지나 재시도 상황에서 생성 비용을 줄입니다.
 
@@ -350,7 +351,7 @@ api_klein/storage.py
   S3 업로드/다운로드, object 존재 확인, public URL / s3 URL 생성.
 
 api_klein/pipeline/llm_prompt_extractor.py
-  GPT-4o 기반 캐릭터 바이블 생성과 페이지 장면 추출.
+  GPT-5.5 기반 캐릭터 바이블 생성과 페이지 장면 추출.
   종별 anatomy 가드, VILLAIN 톤 가이드, 장면 연속성/중복 회피 규칙 포함.
 
 api_klein/pipeline/generator_klein.py
@@ -477,7 +478,7 @@ python worker.py
 
 ### 15.5 FLUX.2-klein-4B + reference 이미지 방식
 
-현재는 `FLUX.2-klein-4B`와 GPT-4o 분석, 역할별 reference 이미지 방식을 결합한 구조를 사용하고 있습니다.
+이 단계에서 `FLUX.2-klein-4B` + GPT-4o 분석 + 역할별 reference 이미지 결합 구조를 도입했습니다.
 
 개선점:
 
@@ -491,6 +492,33 @@ python worker.py
 - reference를 강하게 쓰면 포즈와 표정 변화가 제한됨
 - 문화권 표현 왜곡 가능성이 완전히 사라지지는 않음
 - 다중 캐릭터 장면 혼합 문제는 일부 남아 있음
+
+### 15.6 GPT-5.5 업그레이드 + 가드 시스템 강화 (현재)
+
+현재 구조는 `FLUX.2-klein-4B` + OpenAI Chat Completion(`gpt-5.5` 기본) + 역할별 reference 이미지 + 다층 프롬프트 가드입니다.
+
+변경점:
+
+- 모델 ID를 `.env`의 `OPENAI_MODEL`로 추출 (기본 `gpt-5.5`, 운영 중 교체 가능)
+- GPT-5.5 호환성: `max_completion_tokens=2048`, `temperature` 자유 지정 불가, `reasoning_effort="low"` 적용
+- 종별 anatomy 가드 추가 (BIRD/REPTILE/FISH/AMPHIBIAN/MAMMAL)
+- 페이지 분석 가드: SINGLE BEAT RULE, 단수 한정사 self-check, PASSIVE CHARACTER POSITIONING
+- 페이지당 reference 이미지 최대 3장 컷
+- 출력 해상도 768×768 (1024 대비 40% 단축)
+
+개선점:
+
+- 종 위반(까마귀 입꼬리, 양서류에 fur 등) 사전 차단
+- 캐릭터 복제 패턴 감소 (단수 한정사 self-check + PASSIVE POSITIONING)
+- 복합 액션 페이지 안정화 (SINGLE BEAT RULE)
+- 동화 1편 생성 시간 약 30~40% 단축 (해상도 + reasoning_effort)
+
+남은 한계:
+
+- FLUX 자체의 다중 캐릭터 attention 분산 한계는 본질적
+- 추상적 결말/감정 페이지에서 산발적 미니어처 복제 가능
+- 레퍼런스 이미지가 정면 풀바디 1포즈만 있어 자세 변형 자유도 제한
+- bible 단계 호출 시간 GPT-4o 대비 증가 (reasoning 토큰 비용)
 
 ## 16. 성능 및 품질 개선 요약
 

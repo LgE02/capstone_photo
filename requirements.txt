@@ -10,7 +10,7 @@ Pillow>=10.0.0
 numpy>=1.24.0
 tqdm>=4.65.0
 
-# ── GPT-4o 스토리 분석 ──────────────────────────────────────
+# ── OpenAI Chat Completion (스토리 분석, 기본 gpt-5.5) ──────
 openai>=1.30.0
 python-dotenv>=1.0.0
 

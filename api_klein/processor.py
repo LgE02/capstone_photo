@@ -106,7 +106,7 @@ class FairytaleProcessor:
         self._bible_cache: dict[int, dict[str, Any]] = {}
         # fairytale_id → 과거 페이지 장면 히스토리 (공간 일관성 유지용)
         # 각 항목: {"page_no": int, "sentences": list[str], "narrative_hint": str, "focus_roles": list[str]}
-        # 페이지 N 처리 시 1..N-1 의 항목을 GPT-4o 에 함께 전달.
+        # 페이지 N 처리 시 1..N-1 의 항목을 GPT-5.5 에 함께 전달.
         # 워커 메모리 한정 — 재시작 시 손실 (발표 데모 범위).
         self._scene_history: dict[int, list[dict[str, Any]]] = {}
 
@@ -208,7 +208,7 @@ class FairytaleProcessor:
         print(f"[processor] init 시작 — fairytale {fairytale_id} (역할 {len(roles)}개: {roles})")
         init_start = time.time()
 
-        # bible 없으면 GPT-4o로 생성
+        # bible 없으면 GPT-5.5로 생성
         if existing_bible:
             bible_payload = existing_bible
             visual_descriptions = bible_payload["visual_descriptions"]
@@ -270,16 +270,18 @@ class FairytaleProcessor:
         # 과거 페이지 히스토리 — 공간/상황 일관성 유지용
         previous_scenes = self._scene_history.get(fairytale_id, [])
 
-        # 장면 분석
+        # 장면 분석 — GPT 호출 시간 측정 (사용 모델/비용 추적 + 단축 효과 검증용)
+        analysis_t0 = time.time()
         scene = extract_page_scene(
             sentences=sentences,
             character_bible=visual_descriptions,
             setting=setting,
             previous_scenes=previous_scenes,
         )
+        analysis_elapsed = time.time() - analysis_t0
         focus_roles: list[str] = scene["focus_roles"]
         narrative_hint: str = scene["narrative_hint"]
-        print(f"[processor] page {page_no} 분석 — 등장:{focus_roles}")
+        print(f"[processor] page {page_no} 분석 ({analysis_elapsed:.1f}s) — 등장:{focus_roles}")
         print(f"[processor]   narrative_hint = {narrative_hint!r}")
 
         # 이 페이지를 히스토리에 추가 (생성 성공 여부와 무관하게 분석 결과는 기록)
@@ -297,6 +299,13 @@ class FairytaleProcessor:
             if ref is not None:
                 refs.append(ref)
 
+        # FLUX multi-image 가이던스가 레퍼런스 4장 이상에서 캐릭터 분산/복제가
+        # 심해지는 경향 확인됨. 페이지당 최대 3장으로 제한 (focus_roles 순서 우선).
+        # 4명+ 등장 페이지는 드물어 일상 페이지엔 영향 없는 안전망 역할.
+        MAX_REFERENCES_PER_PAGE = 3
+        if len(refs) > MAX_REFERENCES_PER_PAGE:
+            refs = refs[:MAX_REFERENCES_PER_PAGE]
+
         # 프롬프트 빌드
         prompt = self._build_page_prompt(
             narrative_hint=narrative_hint,
@@ -311,8 +320,6 @@ class FairytaleProcessor:
         images, elapsed = generator.generate(
             prompt=prompt,
             seed=seed,
-            width=1024,
-            height=1024,
             reference_images=refs if refs else None,
         )
 

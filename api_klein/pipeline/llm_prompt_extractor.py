@@ -1,4 +1,5 @@
-"""GPT-4o를 사용해 동화 텍스트에서 삽화 프롬프트를 추출한다 (Klein 전용).
+"""OpenAI Chat Completion API를 사용해 동화 텍스트에서 삽화 프롬프트를 추출한다 (Klein 전용).
+모델 ID는 .env의 OPENAI_MODEL 로 제어 (기본값 gpt-5.5).
 
 기존 api/pipeline/llm_prompt_extractor.py 독립 복사본.
 주요 변경:
@@ -11,11 +12,38 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+# OpenAI 모델 ID — .env 의 OPENAI_MODEL 로 교체 가능. 미설정 시 기본값 사용.
+# 워커 시작 시 1회 평가되므로 모델 교체 후엔 워커 재시작 필요.
+DEFAULT_OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.5")
+
+
+def _completion_kwargs_for(model: str, max_tokens: int) -> dict:
+    """모델별 호환성 파라미터 분기.
+
+    - GPT-5 / o1 / o3 계열 (reasoning 모델):
+        max_completion_tokens + reasoning_effort, temperature 자유 지정 불가.
+    - 그 외 (gpt-4o, gpt-4o-mini, gpt-4-turbo 등 즉답형):
+        max_tokens + temperature.
+
+    .env 의 OPENAI_MODEL 만 바꿔도 호환성 자동 분기 — GPT-4o↔GPT-5.5 A/B 비교에 사용.
+    """
+    if model.startswith(("gpt-5", "o1", "o3")):
+        return {
+            "max_completion_tokens": max_tokens,
+            "reasoning_effort": "low",
+        }
+    return {
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }
 
 
 _CHARACTER_BIBLE_SYSTEM = """\
@@ -112,6 +140,9 @@ BIRD (crow, raven, magpie, owl, sparrow, rooster, duck, swallow, parrot, ...):
     · Describe eye color and shape, NOT eye position or visibility.
     · Accessories attach to: head crown, neck collar, leg anklet, between
       wing feathers, or held in beak/talons. NEVER "behind the ear".
+    · NEVER use acorn / acorn satchel as the prop (over-used for birds).
+      Prefer: small bell on a vine, leaf flute, woven feather charm,
+      pine cone, dewdrop pendant, tiny berry pouch, small wooden whistle.
 
 REPTILE / FISH / AMPHIBIAN (frog, turtle, snake, lizard, fish, ...):
   - Use words: scales (or smooth amphibian skin for frogs). No external ears.
@@ -137,7 +168,7 @@ def extract_character_bible(
     setting: str,
     char_species: str,
     characters: dict[str, str],
-    model: str = "gpt-4o",
+    model: str = DEFAULT_OPENAI_MODEL,
 ) -> dict[str, dict[str, str]]:
     """동화 1편 시작 시 1회 — 역할별 visual_description 생성.
 
@@ -175,9 +206,8 @@ def extract_character_bible(
             {"role": "system", "content": _CHARACTER_BIBLE_SYSTEM},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.3,
-        max_tokens=2048,
         response_format={"type": "json_object"},
+        **_completion_kwargs_for(model, max_tokens=2048),
     )
     raw = response.choices[0].message.content
     parsed = json.loads(raw)
@@ -196,7 +226,8 @@ def extract_character_bible(
 
 _PAGE_SCENE_SYSTEM = """\
 You analyze a single page (1 to 3 Korean sentences) of a fairytale and write the
-illustration scene prompt.
+illustration scene prompt for FLUX.2-klein-4B (Qwen3 text encoder — prefers long
+natural-language sentences, NOT comma-separated keyword tags).
 
 ━━━ OUTPUT (strict JSON, no markdown) ━━━
 { "narrative_hint": "<single English sentence, ~40-55 words>",
@@ -238,6 +269,33 @@ For inner feelings ("felt happy/scared"): depict the TRIGGER event or the
 outward body language (eyes wide, hands covering mouth), not the feeling.
 For pure speech ("said"): show the emotion/reaction accompanying it, or the
 character speaking with a clear gesture.
+
+━━━ SINGLE BEAT RULE (strict — most important constraint) ━━━
+EVEN IF the page text contains multiple actions or characters, narrative_hint
+MUST depict ONLY ONE focused visual beat. The image must be readable at a
+single glance, not a comic-strip summary.
+
+When the page text packs multiple beats:
+- DROP secondary actions. Example: text says "the bear falls AND the frog
+  thanks the magpie" → pick exactly ONE beat (usually the stronger ACTION).
+- DROP side-character actions. Other roles in focus_roles can exist in the
+  frame but stay as background presence, NOT performing their own action.
+  Only ONE character performs the focused action.
+- DROP combined emotions. Do not mix relief + gratitude + surprise — pick one.
+- DROP "while X also does Y" clauses entirely. If you wrote "while", rewrite.
+
+Self-check before output:
+- Could a 4-year-old describe this image in ONE simple sentence?
+  ("the bear falls down", "the frog smiles at the magpie")
+- If your hint would need TWO sentences to read aloud, it is too packed —
+  rewrite to a single beat.
+- Count the verbs in your hint. If more than ONE main action verb, rewrite.
+
+Per-page beat ceiling (hard limit):
+- 1 main visual action (one character, one verb)
+- 1 emotion symbol (optional, only if the action's emotion is clear)
+- Nothing else. Even if focus_roles has 3 characters, only ONE performs
+  the focused action — the others just exist as background presence.
 
 ━━━ SPATIAL & SITUATIONAL CONTINUITY ━━━
 If previous_pages exists, carry over state the current text doesn't restate:
@@ -294,6 +352,15 @@ Single English sentence (~40-55 words) containing:
   GOOD: "the lone HERO leans down towards the lone VILLAIN, while the lone HELPER watches"
   BAD:  "the lone HERO leans down towards the VILLAIN, while the HELPER watches"
         (VILLAIN and HELPER will duplicate)
+
+  CRITICAL SELF-CHECK BEFORE OUTPUT:
+  Scan your narrative_hint for every species noun (mouse, frog, lion, bear,
+  wolf, magpie, crow, ...) and every role name (HERO, VILLAIN, HELPER,
+  DISPATCHER, FALSE_HERO, DONOR). For EACH occurrence:
+    - Is it prefixed with "the lone", "a single", or "one"? → OK
+    - Is it bare ("the mouse", "the lion") or plural-ambiguous? → REWRITE
+  Missing even one qualifier causes that character to duplicate into 2~3
+  copies in the image. This is the most common failure mode.
 - WHERE: a specific location detail (carry from previous_pages if known)
 - Visible EMOTION from face/posture
 - Optional emotion symbol (see below)
@@ -350,6 +417,49 @@ The ONLY text-like glyphs allowed are the emotion-symbol punctuation listed
 above ('!', '?', '!?', '?!', '...'), rendered LARGE as graphic shapes near
 the character (NOT inside any bubble) — these are NOT considered text.
 
+━━━ PASSIVE CHARACTER POSITIONING (strict — required when focus_roles ≥ 2) ━━━
+
+In any page where focus_roles has 2+ characters, exactly ONE performs the
+focused action (per SINGLE BEAT RULE). The others are PASSIVE — they exist
+in the frame but do not perform an action.
+
+PASSIVE characters MUST be given a NARROW, ANCHORED position. Vague positions
+like "small among left reeds with wide eyes" cause diffusion attention to
+spread → the passive character DUPLICATES into 2~3 copies in the image.
+This is the most common cause of character duplication.
+
+For EVERY passive character, the narrative_hint MUST include ALL THREE:
+  1. A SPECIFIC anchor object — a single tree branch, one flat rock, the edge
+     of the lily pad, behind a single tall reed, on top of a particular
+     mushroom. NOT a region ("on the left", "in the reeds", "near the pond").
+  2. A pose verb that fixes the body in place — crouched, perched, peeking,
+     half-hidden, leaning against, sitting on, clinging to.
+  3. A body-part visibility qualifier — "only the head visible", "peeking
+     around the edge", "partially obscured by the leaf", "just the eyes
+     poking out".
+
+GOOD (passive HERO):
+  "the lone HERO mouse crouched behind a single tall reed on the left,
+   only its head and ears poking above the leaf"
+BAD (passive HERO — causes duplication):
+  "the lone HERO mouse small among left reeds with wide eyes"
+  (vague area "among left reeds", no anchor object, no pose verb → DUPLICATES)
+
+WHY THIS MATTERS:
+Diffusion models distribute the character's visual latent across whatever
+canvas region the text describes. A region word ("among left reeds") spreads
+attention across many positions → the model fills several of them with the
+same character. A narrow anchor + pose verb + visibility qualifier concentrates
+attention on ONE specific spot → single character.
+
+SELF-CHECK BEFORE OUTPUT (for every passive character):
+- Did I name a SPECIFIC singular anchor object? If I wrote a plural region
+  ("reeds", "branches", "rocks", "leaves"), REWRITE to a singular ("a single
+  tall reed", "one low branch", "a flat rock").
+- Did I include a pose verb? If only descriptive ("small", "scared"), REWRITE.
+- Did I narrow the visible body part? If the whole body is implied, REWRITE
+  to show only head/eyes/upper-body partially.
+
 ━━━ NO EXTRA CHARACTERS ━━━
 Only characters in focus_roles appear. Even if the Korean text mentions
 "친구들" / "동물들" / "무리" / "사람들", do NOT depict specific companions.
@@ -368,7 +478,7 @@ def extract_page_scene(
     character_bible: dict[str, dict[str, str]],
     setting: str,
     previous_scenes: list[dict[str, Any]] | None = None,
-    model: str = "gpt-4o",
+    model: str = DEFAULT_OPENAI_MODEL,
 ) -> dict[str, Any]:
     """페이지(1~3문장) → 장면 묘사 + 등장 역할 추출.
 
@@ -413,9 +523,8 @@ def extract_page_scene(
             {"role": "system", "content": _PAGE_SCENE_SYSTEM},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.3,
-        max_tokens=512,
         response_format={"type": "json_object"},
+        **_completion_kwargs_for(model, max_tokens=2048),
     )
     raw = response.choices[0].message.content
     parsed = json.loads(raw)
