@@ -136,8 +136,11 @@ BIRD (crow, raven, magpie, owl, sparrow, rooster, duck, swallow, parrot, ...):
     · There is no mouth, no lip corners, no smile-line — only a beak.
     · Forelimbs are wings (not arms); feet are talons (not paws).
   - When writing visual_description:
-    · Use words: feathers, beak, talons, wings. Never fur/paws/mouth.
+    · Use words: feathers, beak, talons, wings. Never fur/paws/mouth/hands/fingers.
     · Describe eye color and shape, NOT eye position or visibility.
+    · NEVER use "carries" — birds do NOT carry with hands. Use attachment
+      language: "tied around the neck with vine", "hanging from a leg anklet",
+      "tucked into vest pocket", "held in the beak", "resting at the chest".
     · Accessories attach to: head crown, neck collar, leg anklet, between
       wing feathers, or held in beak/talons. NEVER "behind the ear".
     · NEVER use acorn / acorn satchel as the prop (over-used for birds).

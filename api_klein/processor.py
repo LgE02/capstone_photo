@@ -379,7 +379,9 @@ class FairytaleProcessor:
                         f"{desc} — this character has full bird anatomy: "
                         f"eyes on the sides of the head (not centered like a human face), "
                         f"no smile-line and no lip corners beside the beak, "
-                        f"feathers not fur"
+                        f"feathers not fur, "
+                        f"wings only — NO human-like hands or fingers, "
+                        f"props held in beak or talons or attached to body"
                     )
                 else:
                     desc = f"{desc} — this character has a full animal body"
