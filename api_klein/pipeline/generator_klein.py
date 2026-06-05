@@ -95,7 +95,14 @@ class KleinImageGenerator:
             + "The face is fully visible with eyes clearly readable. Fur or skin tone is "
             + "even across the entire face — NO dark patches around the eyes, NO mask-like "
             + "markings, NO eye-area shadow that could look like a worn mask. "
-            + "No rope wrappings, no leather bands, no warrior costume on limbs."
+            + "No rope wrappings, no leather bands, no warrior costume on limbs. "
+            + "Maintain proper species anatomy: birds have wings only (NO human-like hands "
+            + "or fingers), eyes on the SIDES of the head (NOT centered front-facing like "
+            + "a human face — eyes spread WIDE apart on the sides, never close together "
+            + "in the center), no smile-line or lip corners beside the beak. "
+            + "Fish/reptiles have natural limbs (no hands). Props attach to "
+            + "body (held in beak/talons, tied around neck, leg anklet, vest pocket) — "
+            + "NOT gripped by hands."
         )
 
         print(f"[KleinGenerator] 캐릭터 레퍼런스 생성 중...")
